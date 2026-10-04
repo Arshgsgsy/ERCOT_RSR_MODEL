@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Data (keep folder structure only)
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS
+.DS_Store
