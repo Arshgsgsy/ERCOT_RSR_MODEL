@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 import ingest
+import ingest_checks
 from ingest import IngestError, cache_status, file_paths, plan_pulls, write_atomic
 
 
@@ -51,7 +52,8 @@ def test_every_query_uses_market_timezone():
 
 
 def test_trial_includes_all_vintage_temperature_check():
-    names = {p["name"]: p for p in plan_pulls("test")}
+    names = {p["name"]: p for p in ingest_checks.trial_pulls()}
+    assert "temperature_all_vintages" not in {p["name"] for p in plan_pulls("test")}
     assert "publish_time" not in names["temperature_all_vintages"]["query"]
     assert names["temperature"]["query"]["publish_time"] == "latest"
 
@@ -168,7 +170,8 @@ def test_pull_then_rerun_reuses_without_calls(tmp_path):
 def test_budget_stops_before_any_pull(tmp_path):
     client = FakeClient(rows_used=490_000)
     with pytest.raises(IngestError, match="rows"):
-        ingest.run_pulls(client, "full", plan_pulls("full"), tmp_path, "snap")
+        ingest.run_pulls(client, "full", plan_pulls("full"), tmp_path, "snap",
+                         preflight=ingest_checks.preflight)
     assert client.calls == []
 
 
@@ -176,10 +179,10 @@ def test_full_requires_trial(tmp_path, monkeypatch):
     monkeypatch.setitem(ingest.PATHS, "access", tmp_path / "access.json")
     monkeypatch.setitem(ingest.PATHS, "raw_test", tmp_path / "test")
     with pytest.raises(IngestError, match="access"):
-        ingest.require_gates("full")
+        ingest_checks.require_gates("full")
     (tmp_path / "access.json").write_text("{}")
     with pytest.raises(IngestError, match="Trial file"):
-        ingest.require_gates("full")
+        ingest_checks.require_gates("full")
 
 
 # --- checks ---------------------------------------------------------------
@@ -192,11 +195,11 @@ def test_vintage_check_detects_change_after_the_hour():
         "publish_time_utc": [hour - pd.Timedelta("1D"), hour + pd.Timedelta("2D"), hour + pd.Timedelta("3D")],
         "coast": [80.0, 81.0, 82.0],
     })
-    out = ingest.vintage_check(df)
+    out = ingest_checks.vintage_check(df)
     assert out["cells_where_value_changes_after_the_hour"] == 1
     assert out["cells_where_value_changes_a_day_or_more_after_the_hour"] == 1
     df.loc[2, "coast"] = 81.0
-    assert ingest.vintage_check(df)["cells_where_value_changes_after_the_hour"] == 0
+    assert ingest_checks.vintage_check(df)["cells_where_value_changes_after_the_hour"] == 0
 
 
 def test_vintage_check_ignores_same_day_revision():
@@ -207,7 +210,7 @@ def test_vintage_check_ignores_same_day_revision():
         "publish_time_utc": [hour + pd.Timedelta("1h"), hour + pd.Timedelta("1D 1h"), hour + pd.Timedelta("2D 1h")],
         "far_west": [47.0, 45.5, 45.5],
     })
-    out = ingest.vintage_check(df)
+    out = ingest_checks.vintage_check(df)
     assert out["cells_where_value_changes_after_the_hour"] == 1
     assert out["cells_where_value_changes_a_day_or_more_after_the_hour"] == 0
 
@@ -216,5 +219,11 @@ def test_price_file_with_extra_location_fails_gate():
     p = plan_pulls("test", ["da"])[0]
     df = small_df()
     df.loc[0, "location"] = "HB_NORTH"
-    fails, _ = ingest.check_file(p, df)
+    fails, _ = ingest_checks.check_file(p, df)
     assert fails
+
+
+def test_gas_full_pull_starts_before_study_window():
+    gas = plan_pulls("full", ["gas"])[0]["query"]
+    assert gas["start"] == "2025-09-24" and gas["end"] == "2026-10-01"
+    assert plan_pulls("test", ["gas"])[0]["query"]["start"] == ingest.CONFIG["test_week"]["start"]

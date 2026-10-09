@@ -48,6 +48,166 @@ CONFIG = {
         "outputs": ROOT / "outputs",
     },
 
+    # Which raw snapshot the build reads. A dataset re-pulled later (e.g. gas
+    # after EIA's weekly refresh) can be taken from its own snapshot.
+    "raw_snapshot": {
+        "default": "2026-10-03",
+        # Gas re-pulled Oct 8, 2026 from Sep 24, 2025, after EIA's weekly
+        # refresh. It fills Sep 30, 2025 (lag for Oct 1) and Sep 30, 2026.
+        "per_dataset": {"gas": "2026-10-08"},
+    },
+
+    # Step 2, align() (Build Plan 6.2 and 7.3).
+    "align": {
+        # D7: an hour has an RT price only with all four 15-minute prices.
+        "rt_intervals_per_hour": 4,
+        # 7.3: the November fall-back 1 a.m. temperatures are repaired (both set
+        # to the mean of 12 a.m. and 2 a.m., and flagged) if either 1 a.m. value
+        # is more than this far from that mean in any weather zone, or if the
+        # second 1 a.m. row is identical to the 2 a.m. row in every weather zone.
+        "dst_repair_max_dev_f": 10.0,
+        # Plausible Texas range for any weather-zone temperature after repair.
+        "temp_range_f": (-10.0, 120.0),
+        # D13: gas gaps longer than this inside the series are reported. Shorter
+        # gaps are weekends and holidays and are carried forward.
+        "gas_max_gap_days": 4,
+        "decision": "D2, D3, D7, D9, D13",
+    },
+
+    # Step 3, make_features() (Build Plan 5.3, 5.4 and 6.3).
+    "features": {
+        # Spread = DA minus RT. Positive means buyers paid a day-ahead premium.
+        # On-peak: weekdays, hour ending 7 to 22. Holidays are not excluded
+        # (owner decision: keep the plan's definition, 261 weekdays).
+        "onpeak_hour_ending": (7, 22),
+        # load_norm = load / the zone's 99.5th percentile hourly load (never clipped).
+        "load_norm_quantile": 0.995,
+        # Degree days from hourly temperatures: daily cdd/hdd = mean of the hourly
+        # degrees above/below the base (owner decision, not the NOAA high/low rule).
+        "degree_day_base_f": 65.0,
+        # IMHR is left empty when gas is at or below this price.
+        "gas_floor": 0.50,
+        # Daily mean IMHR outside this range is listed for investigation, never
+        # removed (owner decision: option A, applied to daily means).
+        "imhr_typical_range": (3.0, 30.0),
+        # post_rtcb = 1 from this operating day on (RTC+B go-live).
+        "rtcb_go_live": "2025-12-05",
+        # A partial-day sensitivity is needed if more than this share of days fail.
+        "max_incomplete_day_share": 0.05,
+        "decision": "D10, D11, D12, D22, D36",
+    },
+
+    # The RSR engine (Build Plan 6.4). Passed to rsr.Surface as settings.
+    "rsr": {
+        "search_cutoff_r2": 0.01,       # NCSS default
+        "ridge_tolerance": 0.05,        # smallest/largest |eigenvalue| below this -> ridge
+        "inside_radius": 0.15,          # coded units; sensitivity at 0.10 and 0.20
+        "inside_radius_sensitivity": (0.10, 0.20),
+        "min_pure_error_df": 2,
+        # HAC lag = ceil(1.3 * sqrt(n)): 25 for 365 days, 22 for 261 (rsr.hac_lag).
+        "decision": "D16, D17, D19, D31",
+    },
+
+    # Inference for reported tests and intervals (owner decision Oct 9, 2026; departs
+    # from D16/D17). On the project's designs the HAC Wald tests reject 27-39% (lack
+    # of fit) and 8-40% (single terms) at nominal 5% (notebooks/hac_size_check.py).
+    # Tests: residual block bootstrap under the null; intervals: moving-block pairs
+    # bootstrap. Block length 25 days (= the HAC lag), 10 and 50 as sensitivity.
+    "inference": {
+        "bootstrap_B": 999,
+        "block_len": 25,
+        "block_len_sensitivity": (10, 50),
+        "seed": 20261009,
+        "level": 0.95,
+        # Diagnostic refit without Winter Storm Fern and the days after it (Build Plan 7.4).
+        "fern_window": ("2026-01-23", "2026-02-01"),
+        # Marginal effects at three observed days per model sample (Build Plan 6.4):
+        # the days nearest the 5th and 95th temperature percentiles, and nearest 65 °F.
+        "effect_days": {"cold_quantile": 0.05, "hot_quantile": 0.95, "mild_temp_f": 65.0},
+        "decision": "D16, D17 (departure), D31, D41",
+    },
+
+    # The model grid (Build Plan 6.5). Every model has the post-RTC+B block.
+    # Level responses: asinh((y - median) / MAD) on the model sample.
+    # Volatility responses: log of the daily spread SD (already in daily.parquet).
+    "models": {
+        "lvl_zone": {"priority": 1, "zones": "zones", "response": "spread_mean", "transform": "asinh_mad",
+                     "factors": ["temp_mean", "load_peak_norm"], "labels": ["T", "L"], "sample": "all"},
+        "vol_zone": {"priority": 1, "zones": "zones", "response": "log_spread_sd", "transform": "none",
+                     "factors": ["temp_mean", "load_peak_norm"], "labels": ["T", "L"], "sample": "all"},
+        "lvl_sys": {"priority": 2, "zones": "system", "response": "spread_mean", "transform": "asinh_mad",
+                    "factors": ["sys_temp", "sys_load_peak_norm"], "labels": ["T", "L"], "sample": "all"},
+        "vol_sys": {"priority": 2, "zones": "system", "response": "log_spread_sd", "transform": "none",
+                    "factors": ["sys_temp", "sys_load_peak_norm"], "labels": ["T", "L"], "sample": "all"},
+        "lvl_zone_onpeak": {"priority": 2, "zones": "zones", "response": "spread_onpeak_mean",
+                            "transform": "asinh_mad", "factors": ["temp_mean", "load_peak_norm"],
+                            "labels": ["T", "L"], "sample": "weekday"},
+        "block": ["post_rtcb"],
+        "decision": "D11, D12, D22, D33",
+    },
+
+    # Descriptive model terms chosen by the owner in notebooks/explore_terms.ipynb,
+    # one entry per model and zone. Must be hierarchical. The full quadratic is
+    # always the model used for inference; these are the surfaces presented.
+    # Rule (approved Oct 9, 2026; evidence in docs/term_selection.md and outputs/term_selection/):
+    # the NCSS search (R² loss < 0.01), then the reference set T, L, L^2, T*L if it is
+    # within 2 AIC of the search result. On-peak rows mirror the all-hours level choice.
+    "selected_terms": {
+        "vol_zone|LZ_HOUSTON": {"terms": ["T", "L", "L^2", "T*L"],
+                                "why": "NCSS search drops T^2 (R² loss 0.0088); surface within 10% of the full quadratic"},
+        "vol_zone|LZ_NORTH": {"terms": ["T", "L", "L^2", "T*L"],
+                              "why": "NCSS search drops T^2 (R² loss 0.0060, ΔAIC +1.0, ΔBIC −2.9)"},
+        "vol_zone|LZ_SOUTH": {"terms": ["T", "L", "L^2", "T*L"],
+                              "why": "tie-break: search keeps T, L, T*L; reference set is 1.9 AIC better"},
+        "vol_zone|LZ_WEST": {"terms": ["T", "L", "T^2"],
+                             "why": "NCSS search drops L^2 and T*L; T^2 needed (dropping it costs ΔAIC +10.9), "
+                                    "reference set 10.5 AIC worse"},
+        "lvl_zone|LZ_HOUSTON": {"terms": ["T", "L", "T^2", "L^2", "T*L"],
+                                "why": "NCSS search keeps every term (each costs R² ≥ 0.013); reference set 4.1 AIC worse"},
+        "lvl_zone|LZ_NORTH": {"terms": ["T", "L", "L^2", "T*L"],
+                              "why": "NCSS search drops T^2 (R² loss 0.0034, ΔAIC −0.7)"},
+        "lvl_zone|LZ_SOUTH": {"terms": ["T", "L", "L^2", "T*L"],
+                              "why": "NCSS search drops T^2 (R² loss 0.0007, ΔAIC −1.7)"},
+        "lvl_zone|LZ_WEST": {"terms": ["T", "L", "L^2", "T*L"],
+                             "why": "tie-break: search keeps T, L, T*L; reference set within 1.0 AIC"},
+        "vol_sys|SYSTEM": {"terms": ["T", "L", "L^2", "T*L"],
+                           "why": "NCSS search drops T^2 (R² loss 0.0006, ΔAIC −1.7)"},
+        "lvl_sys|SYSTEM": {"terms": ["T", "L", "L^2", "T*L"],
+                           "why": "NCSS search drops T^2 (R² loss 0.0046, ΔAIC −0.2)"},
+        "lvl_zone_onpeak|LZ_HOUSTON": {"terms": ["T", "L", "T^2", "L^2", "T*L"],
+                                       "why": "mirrors lvl_zone; own search (T, T^2) driven by Jan 26 (Cook's D 1.9)"},
+        "lvl_zone_onpeak|LZ_NORTH": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
+        "lvl_zone_onpeak|LZ_SOUTH": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
+        "lvl_zone_onpeak|LZ_WEST": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
+    },
+
+    # Units of the interim hourly panel (Build Plan 5.2 and 7.5).
+    "units": {
+        "da_price": "$/MWh",
+        "rt_price": "$/MWh",
+        "rt_price_partial": "$/MWh",
+        "rt_intrahour_sd": "$/MWh",
+        "load": "MW",
+        "sys_load": "MW",
+        "temp": "°F",
+        "temp_range": "°F",
+        "gas_price": "$/MMBtu",
+        "gas_price_same": "$/MMBtu",
+        "raw_gas_units": "$/MMBTU",
+        "spread": "$/MWh",
+        "abs_spread": "$/MWh",
+        "sys_spread": "$/MWh",
+        "da_basis": "$/MWh",
+        "rt_basis": "$/MWh",
+        "imhr_da": "MMBtu/MWh",
+        "imhr_rt": "MMBtu/MWh",
+        "load_norm": "multiple of 99.5th percentile load",
+        "cdd_h": "°F",
+        "hdd_h": "°F",
+        "cdd": "°F·day",
+        "hdd": "°F·day",
+    },
+
     # Grid Status client behaviour. The account allows 1 request per second,
     # so every call is followed by a pause. Retries are kept low so a failure
     # stops the run instead of silently spending requests.
@@ -119,6 +279,9 @@ CONFIG = {
             "priority": "required",
             "params": {},
             "rows_per_day": 5 / 7,
+            # The full pull starts a week before the study window so the first
+            # flow day (Oct 1, 2025) has an earlier observation under the lag rule.
+            "full_pull_start": "2025-09-24",
             "decision": "D13",
         },
     },

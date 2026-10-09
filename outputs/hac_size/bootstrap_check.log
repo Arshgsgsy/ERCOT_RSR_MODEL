@@ -1,0 +1,3 @@
+vol_zone  LZ_HOUSTON iid       | size LoF hac 0.337 b10 0.047 b25 0.047 b50 0.047 | coverage hac 0.875 b10 0.967 b25 0.962 b50 0.948
+vol_zone  LZ_HOUSTON ar1       | size LoF hac 0.350 b10 0.057 b25 0.057 b50 0.060 | coverage hac 0.871 b10 0.959 b25 0.954 b50 0.961
+vol_zone  LZ_HOUSTON block_vol | size LoF hac 0.303 b10 0.030 b25 0.037 b50 0.033 | coverage hac 0.856 b10 0.947 b25 0.950 b50 0.955
