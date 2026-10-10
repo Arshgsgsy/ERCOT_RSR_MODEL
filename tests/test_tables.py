@@ -98,3 +98,13 @@ def test_gas_sensitivity_identical_when_prices_equal():
     assert (g["days_gas_differs"] == 0).all()
     assert np.allclose(g["imhr_da_mean_lagged"], g["imhr_da_mean_same"])
     assert SYSTEM not in g.index
+
+
+def test_temperature_quintiles_cover_every_model_day_and_flag_fern():
+    from tables import by_temperature_quintile
+    d = fake_daily(n=60)
+    d["local_date"] = d["local_date"] - pd.Timedelta(days=40)   # Jan 21 - Mar 21, 2026: Fern inside
+    q = by_temperature_quintile(d)
+    assert set(q.index.get_level_values("quintile")) == {1, 2, 3, 4, 5}
+    assert q.groupby("zone")["n_days"].sum().eq(60).all()
+    assert q.groupby("zone")["n_fern_days"].sum().eq(10).all()

@@ -1,0 +1,85 @@
+model,zone,source,df,seq_ss,incremental_r2
+lvl_zone,LZ_HOUSTON,Regression,6,51.6665,0.0910853
+lvl_zone,LZ_HOUSTON,Block,1,1.49074,0.00262809
+lvl_zone,LZ_HOUSTON,Linear,2,32.3614,0.0570514
+lvl_zone,LZ_HOUSTON,Quadratic,2,9.19141,0.0162039
+lvl_zone,LZ_HOUSTON,Lin x Lin,1,8.62295,0.0152018
+lvl_zone,LZ_HOUSTON,Total Error,354,515.566,0.908915
+lvl_zone,LZ_NORTH,Regression,6,30.3296,0.049053
+lvl_zone,LZ_NORTH,Block,1,0.104101,0.000168366
+lvl_zone,LZ_NORTH,Linear,2,5.23256,0.00846278
+lvl_zone,LZ_NORTH,Quadratic,2,13.1637,0.02129
+lvl_zone,LZ_NORTH,Lin x Lin,1,11.8292,0.0191318
+lvl_zone,LZ_NORTH,Total Error,354,587.974,0.950947
+lvl_zone,LZ_SOUTH,Regression,6,43.44,0.0689551
+lvl_zone,LZ_SOUTH,Block,1,0.16128,0.000256011
+lvl_zone,LZ_SOUTH,Linear,2,20.1302,0.031954
+lvl_zone,LZ_SOUTH,Quadratic,2,4.95642,0.00786765
+lvl_zone,LZ_SOUTH,Lin x Lin,1,18.1921,0.0288775
+lvl_zone,LZ_SOUTH,Total Error,354,586.535,0.931045
+lvl_zone,LZ_WEST,Regression,6,36.1502,0.0663703
+lvl_zone,LZ_WEST,Block,1,0.72128,0.00132424
+lvl_zone,LZ_WEST,Linear,2,2.9662,0.00544584
+lvl_zone,LZ_WEST,Quadratic,2,26.8407,0.0492786
+lvl_zone,LZ_WEST,Lin x Lin,1,5.62194,0.0103217
+lvl_zone,LZ_WEST,Total Error,354,508.524,0.93363
+vol_zone,LZ_HOUSTON,Regression,6,50.1402,0.246697
+vol_zone,LZ_HOUSTON,Block,1,0.296844,0.00146051
+vol_zone,LZ_HOUSTON,Linear,2,28.0619,0.138068
+vol_zone,LZ_HOUSTON,Quadratic,2,5.21083,0.025638
+vol_zone,LZ_HOUSTON,Lin x Lin,1,16.5707,0.08153
+vol_zone,LZ_HOUSTON,Total Error,354,153.106,0.753303
+vol_zone,LZ_NORTH,Regression,6,68.4508,0.27165
+vol_zone,LZ_NORTH,Block,1,0.00364874,1.44802e-05
+vol_zone,LZ_NORTH,Linear,2,45.8989,0.182152
+vol_zone,LZ_NORTH,Quadratic,2,11.0043,0.0436709
+vol_zone,LZ_NORTH,Lin x Lin,1,11.544,0.0458127
+vol_zone,LZ_NORTH,Total Error,354,183.531,0.72835
+vol_zone,LZ_SOUTH,Regression,6,50.159,0.206283
+vol_zone,LZ_SOUTH,Block,1,4.15406,0.0170839
+vol_zone,LZ_SOUTH,Linear,2,35.1612,0.144603
+vol_zone,LZ_SOUTH,Quadratic,2,2.57296,0.0105815
+vol_zone,LZ_SOUTH,Lin x Lin,1,8.27079,0.0340142
+vol_zone,LZ_SOUTH,Total Error,354,192.998,0.793717
+vol_zone,LZ_WEST,Regression,6,50.4364,0.247655
+vol_zone,LZ_WEST,Block,1,1.94316,0.00954141
+vol_zone,LZ_WEST,Linear,2,15.9199,0.0781709
+vol_zone,LZ_WEST,Quadratic,2,31.0021,0.152228
+vol_zone,LZ_WEST,Lin x Lin,1,1.57116,0.0077148
+vol_zone,LZ_WEST,Total Error,354,153.219,0.752345
+lvl_sys,SYSTEM,Regression,6,37.1784,0.0620117
+lvl_sys,SYSTEM,Block,1,0.634877,0.00105894
+lvl_sys,SYSTEM,Linear,2,12.3851,0.0206578
+lvl_sys,SYSTEM,Quadratic,2,12.1314,0.0202346
+lvl_sys,SYSTEM,Lin x Lin,1,12.027,0.0200604
+lvl_sys,SYSTEM,Total Error,354,562.36,0.937988
+vol_sys,SYSTEM,Regression,6,62.6566,0.25849
+vol_sys,SYSTEM,Block,1,0.653633,0.00269657
+vol_sys,SYSTEM,Linear,2,43.6215,0.179961
+vol_sys,SYSTEM,Quadratic,2,4.61432,0.0190364
+vol_sys,SYSTEM,Lin x Lin,1,13.7672,0.0567965
+vol_sys,SYSTEM,Total Error,354,179.738,0.74151
+lvl_zone_onpeak,LZ_HOUSTON,Regression,6,23.8714,0.0629502
+lvl_zone_onpeak,LZ_HOUSTON,Block,1,0.687313,0.00181249
+lvl_zone_onpeak,LZ_HOUSTON,Linear,2,14.0661,0.0370931
+lvl_zone_onpeak,LZ_HOUSTON,Quadratic,2,7.49342,0.0197606
+lvl_zone_onpeak,LZ_HOUSTON,Lin x Lin,1,1.62457,0.00428408
+lvl_zone_onpeak,LZ_HOUSTON,Total Error,250,355.339,0.93705
+lvl_zone_onpeak,LZ_NORTH,Regression,6,12.6516,0.0302026
+lvl_zone_onpeak,LZ_NORTH,Block,1,0.0152303,3.63585e-05
+lvl_zone_onpeak,LZ_NORTH,Linear,2,2.52053,0.00601714
+lvl_zone_onpeak,LZ_NORTH,Quadratic,2,6.2126,0.0148311
+lvl_zone_onpeak,LZ_NORTH,Lin x Lin,1,3.90325,0.00931805
+lvl_zone_onpeak,LZ_NORTH,Total Error,250,406.24,0.969797
+lvl_zone_onpeak,LZ_SOUTH,Regression,6,17.9128,0.0426318
+lvl_zone_onpeak,LZ_SOUTH,Block,1,0.272129,0.00064766
+lvl_zone_onpeak,LZ_SOUTH,Linear,2,10.5685,0.0251528
+lvl_zone_onpeak,LZ_SOUTH,Quadratic,2,0.509949,0.00121366
+lvl_zone_onpeak,LZ_SOUTH,Lin x Lin,1,6.56215,0.0156177
+lvl_zone_onpeak,LZ_SOUTH,Total Error,250,402.26,0.957368
+lvl_zone_onpeak,LZ_WEST,Regression,6,20.6996,0.0554595
+lvl_zone_onpeak,LZ_WEST,Block,1,1.11361,0.00298364
+lvl_zone_onpeak,LZ_WEST,Linear,2,0.762226,0.0020422
+lvl_zone_onpeak,LZ_WEST,Quadratic,2,15.1428,0.0405716
+lvl_zone_onpeak,LZ_WEST,Lin x Lin,1,3.68091,0.00986211
+lvl_zone_onpeak,LZ_WEST,Total Error,250,352.538,0.94454

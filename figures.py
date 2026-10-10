@@ -11,6 +11,14 @@ Written so far
                         SD against temperature colored by peak load, DA implied heat
                         rate against peak load, zonal spread correlation heatmap
 - binned_sd_load.png    daily spread SD by peak-load decile, per zone (+ CSV)
+- contours_volatility.png   the four zones' volatility surfaces (owner's terms) in
+                        $/MWh with Duan smearing, one shared log color scale,
+                        masked to observed days, Fern days marked (+ grid CSV)
+- contours_volatility_unsmeared.png  the same without smearing (median SD), shown
+                        because residual spread changes across the factors
+                        (smearing_check.csv)
+- contour_system.png    the system surface on its own factors, zone color limits
+- contour_radius_sensitivity.csv  share of each grid shown at radius 0.10/0.15/0.20
 - diagnostics_figure()  residuals against fitted and time, normal probability plot,
                         for any list of fits (called by the model runner)
 """
@@ -54,6 +62,13 @@ def model_days(daily: pd.DataFrame) -> pd.DataFrame:
     return daily[daily["complete_day"] & daily["factors_complete"]]
 
 
+def set_ticks(axis, values) -> None:
+    """Plain-number ticks on an asinh axis (the default labels overlap near zero)."""
+    axis.set_major_locator(matplotlib.ticker.FixedLocator(values))
+    axis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}".replace("-", "−")))
+    axis.set_minor_locator(matplotlib.ticker.NullLocator())
+
+
 def save(fig, out: Path, name: str) -> Path:
     path = out / f"{name}.png"
     fig.savefig(path, dpi=DPI)
@@ -73,6 +88,7 @@ def panel_hourly_distribution(ax, hourly: pd.DataFrame) -> None:
         x = hourly.loc[hourly["zone"] == z, "spread"].dropna()
         ax.hist(x, bins=edges, histtype="step", lw=0.9, color=ZONE_COLORS[z], label=ZONE_LABELS[z])
     ax.set_xscale("asinh", linear_width=1.0)
+    set_ticks(ax.xaxis, [-1000, -100, -10, 0, 10, 100, 1000])
     ax.set_yscale("log")
     ax.set(xlabel=f"hourly spread ($/MWh, asinh scale; {SPREAD_SIGN})", ylabel="hours",
            title="(a) Hourly spread distribution")
@@ -98,10 +114,12 @@ def panel_imhr_vs_load(ax, daily: pd.DataFrame) -> None:
         ax.scatter(g["load_peak_norm"], g["imhr_da_mean"], s=4, lw=0, color=ZONE_COLORS[z], alpha=0.7,
                    label=ZONE_LABELS[z])
     ax.set_yscale("asinh", linear_width=1.0)
+    set_ticks(ax.yaxis, [-1, 0, 1, 3, 10, 30])
     ax.set(xlabel="peak load / 99.5th pct load", ylabel="daily mean DA IMHR (MMBtu/MWh, asinh scale)",
            title="(c) DA implied heat rate (Henry Hub) vs peak load")
     lo, hi = CONFIG["features"]["imhr_typical_range"]
-    ax.axhspan(lo, hi, color="0.9", zorder=0, lw=0)
+    ax.axhspan(lo, hi, color="0.9", zorder=0, lw=0, label=f"{lo:g}–{hi:g} MMBtu/MWh")
+    ax.legend(frameon=False, loc="lower left", markerscale=2.5, ncol=2)
 
 
 def panel_correlation(ax, fig, daily: pd.DataFrame) -> pd.DataFrame:
@@ -169,6 +187,119 @@ def binned_figure(daily: pd.DataFrame, out: Path) -> Path:
 
 
 # --------------------------------------------------------------------------
+# Masked contour maps of the volatility surfaces (Build Plan 6.6, D19)
+# --------------------------------------------------------------------------
+
+def surface_for(daily: pd.DataFrame, model: str, zone: str):
+    """The fitted descriptive surface the report draws (the owner's terms). Refitting
+    here is deterministic and gives the same fit as the model runner."""
+    import run_models as rm
+    s, info = rm.make_surface(daily, model, zone)
+    terms, _ = rm.chosen_terms(s, model, zone)
+    return s, s.fit(terms), info
+
+
+def contour_grid(s, fit, info: dict, radius: float, n: int = 120) -> pd.DataFrame:
+    """Fitted values on a grid over the observed factor ranges, in response units
+    and in $/MWh (smeared and unsmeared), with the inside-data mask."""
+    import run_models as rm
+    g = s.predict_grid(fit, n=n, block_values=rm.BLOCK_AT, radius=radius)
+    resid = fit.resid.to_numpy()
+    return pd.DataFrame({
+        g["x_name"]: g["x"].ravel(), g["y_name"]: g["y"].ravel(), "fitted": g["z"].ravel(),
+        "dollars_smeared": rm.to_dollars(g["z"].ravel(), resid, info)[0],
+        "dollars_unsmeared": rm.to_dollars(g["z"].ravel(), np.zeros(1), info)[0],
+        "inside": g["inside"].ravel(), "radius": radius,
+    })
+
+
+def contour_panel(ax, s, fit, grid: pd.DataFrame, value: str, norm, levels, title: str):
+    import run_models as rm
+    xn, yn = s.factors
+    n = int(np.sqrt(len(grid)))
+    X, Y = (grid[c].to_numpy().reshape(n, n) for c in (xn, yn))
+    Z = np.where(grid["inside"].to_numpy(), grid[value].to_numpy(), np.nan).reshape(n, n)
+    cf = ax.contourf(X, Y, Z, levels=levels, norm=norm, cmap="viridis", extend="both")
+    ax.contour(X, Y, Z, levels=levels, colors="k", linewidths=0.25)
+    fern = pd.Series(s.index).between(*rm.INF["fern_window"]).to_numpy()
+    ax.scatter(s.Xreal[~fern, 0], s.Xreal[~fern, 1], s=2, c="white", edgecolors="k", linewidths=0.15, zorder=3)
+    ax.scatter(s.Xreal[fern, 0], s.Xreal[fern, 1], s=14, marker="x", c="red", linewidths=0.8, zorder=4,
+               label="Jan 23 – Feb 1, 2026")
+    can = s.canonical(fit, block_values=rm.BLOCK_AT)
+    if can.get("inside_data"):
+        xs = can["stationary_real"]
+        ax.scatter([xs.iloc[0]], [xs.iloc[1]], marker="*", s=60, c="orange", edgecolors="k", linewidths=0.4,
+                   zorder=5, label=f"stationary point ({can['shape']})")
+    ax.set_title(title)
+    return cf
+
+
+def volatility_contours(daily: pd.DataFrame, out: Path, value: str = "dollars_smeared",
+                        radius: float | None = None, name: str = "contours_volatility") -> Path:
+    """Four zone volatility surfaces on one shared dollar color scale, masked to
+    where an observed day lies within `radius` (coded units, both factors)."""
+    import run_models as rm
+    radius = CONFIG["rsr"]["inside_radius"] if radius is None else radius
+    zones = rm.zones_for("vol_zone")
+    fitted = {z: surface_for(daily, "vol_zone", z) for z in zones}
+    grids = {z: contour_grid(s, f, info, radius) for z, (s, f, info) in fitted.items()}
+    inside = pd.concat([g.loc[g["inside"], value] for g in grids.values()])
+    norm = matplotlib.colors.LogNorm(vmin=inside.min(), vmax=inside.max())
+    levels = np.geomspace(inside.min(), inside.max(), 15)
+    fig, axes = plt.subplots(2, 2, figsize=(TEXT_WIDTH_IN, 5.4), constrained_layout=True)
+    for ax, z in zip(axes.ravel(), zones):
+        s, f, _ = fitted[z]
+        cf = contour_panel(ax, s, f, grids[z], value, norm, levels, f"{ZONE_LABELS[z]}: {', '.join(f.names)}")
+        ax.set(xlabel="daily mean temperature (°F)", ylabel="peak load / 99.5th pct load")
+    axes[0, 0].legend(frameon=False, loc="upper left", fontsize=6)
+    what = "smeared back-transform, approximate" if value == "dollars_smeared" else "unsmeared: median SD"
+    cb = fig.colorbar(cf, ax=axes, shrink=0.9)
+    cb.set_label(f"daily spread SD ($/MWh, {what})")
+    cb.set_ticks([t for t in (5, 10, 20, 50, 100, 200, 500, 1000) if levels[0] <= t <= levels[-1]])
+    cb.set_ticklabels([f"{t:g}" for t in cb.get_ticks()])
+    fig.suptitle(f"Volatility surfaces, post-RTC+B regime, masked at radius {radius:g} (coded, both factors)",
+                 fontsize=8.5)
+    pd.concat([g.assign(zone=z) for z, g in grids.items()]).to_csv(out / f"{name}.csv", index=False,
+                                                                     float_format="%.6g")
+    return save(fig, out, name)
+
+
+def system_contour(daily: pd.DataFrame, out: Path, zone_limits: tuple[float, float]) -> Path:
+    """The system volatility surface on its own factors, with the zones' color limits."""
+    s, f, info = surface_for(daily, "vol_sys", SYSTEM)
+    grid = contour_grid(s, f, info, CONFIG["rsr"]["inside_radius"])
+    lo, hi = zone_limits
+    norm, levels = matplotlib.colors.LogNorm(vmin=lo, vmax=hi), np.geomspace(lo, hi, 15)
+    fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN * 0.6, 3.0), constrained_layout=True)
+    cf = contour_panel(ax, s, f, grid, "dollars_smeared", norm, levels, f"System: {', '.join(f.names)}")
+    ax.set(xlabel="load-weighted temperature (°F)", ylabel="system peak load / 99.5th pct load")
+    ax.legend(frameon=False, loc="upper left", fontsize=6)
+    cb = fig.colorbar(cf, ax=ax)
+    cb.set_label("daily system spread SD ($/MWh, approximate)")
+    cb.set_ticks([t for t in (5, 10, 20, 50, 100, 200, 500, 1000) if lo <= t <= hi])
+    cb.set_ticklabels([f"{t:g}" for t in cb.get_ticks()])
+    grid.to_csv(out / "contour_system.csv", index=False, float_format="%.6g")
+    return save(fig, out, "contour_system")
+
+
+def radius_sensitivity(daily: pd.DataFrame, out: Path) -> Path:
+    """Share of each zone's grid shown at each mask radius (D19 sensitivity)."""
+    import run_models as rm
+    radii = sorted({*CONFIG["rsr"]["inside_radius_sensitivity"], CONFIG["rsr"]["inside_radius"]})
+    rows = []
+    for z in rm.zones_for("vol_zone"):
+        s, f, info = surface_for(daily, "vol_zone", z)
+        for r in radii:
+            g = contour_grid(s, f, info, r)
+            v = g.loc[g["inside"], "dollars_smeared"]
+            rows.append({"zone": z, "radius": r, "share_of_grid_shown": g["inside"].mean(),
+                         "dollars_min_shown": v.min(), "dollars_max_shown": v.max()})
+    path = out / "contour_radius_sensitivity.csv"
+    pd.DataFrame(rows).to_csv(path, index=False, float_format="%.6g")
+    return path
+
+
+# --------------------------------------------------------------------------
 # Compact diagnostics (called by the model runner)
 # --------------------------------------------------------------------------
 
@@ -203,6 +334,12 @@ def write_figures(out: Path) -> list[Path]:
     fig_dir = out / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
     paths = [exploration_figure(daily, hourly, fig_dir), binned_figure(daily, fig_dir)]
+    paths.append(volatility_contours(daily, fig_dir))
+    zone_grid = pd.read_csv(fig_dir / "contours_volatility.csv")
+    shown = zone_grid.loc[zone_grid["inside"], "dollars_smeared"]
+    paths.append(system_contour(daily, fig_dir, (shown.min(), shown.max())))
+    paths.append(volatility_contours(daily, fig_dir, value="dollars_unsmeared", name="contours_volatility_unsmeared"))
+    paths.append(radius_sensitivity(daily, fig_dir))
     for p in paths:
         print(f"Wrote {p}")
     return paths

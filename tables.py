@@ -15,6 +15,8 @@ Tables
 - representative_table.csv    the compact report table: the two above merged
 - heat_rates_and_load.csv     zonal DA/RT implied heat rates and load measures
 - gas_sensitivity.csv         heat rates under the lagged and same-date gas price (D13)
+- by_temperature_quintile.csv daily spread level and SD by temperature quintile,
+                              with and without the Winter Storm Fern days
 - event_table.csv             top days per zone by daily spread SD (6.7)
 """
 
@@ -187,6 +189,32 @@ def gas_sensitivity(daily: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------
+# Spreads by temperature quintile (a plain summary beside the weak level surfaces)
+# --------------------------------------------------------------------------
+
+def by_temperature_quintile(daily: pd.DataFrame) -> pd.DataFrame:
+    """Daily spread level and volatility by the zone's own temperature quintile,
+    on the model days, with and without the Winter Storm Fern window."""
+    fern = CONFIG["inference"]["fern_window"]
+    d = daily[daily["complete_day"] & daily["factors_complete"]].copy()
+    d["fern"] = d["local_date"].between(*fern)
+    rows = []
+    for zone in zone_order(d["zone"]):
+        g = d[d["zone"] == zone].copy()
+        g["quintile"] = pd.qcut(g["temp_mean"], 5, labels=False) + 1
+        for q, gq in g.groupby("quintile"):
+            nf = gq[~gq["fern"]]
+            rows.append({"zone": zone, "quintile": int(q), "temp_lo": gq["temp_mean"].min(),
+                         "temp_hi": gq["temp_mean"].max(), "n_days": len(gq), "n_fern_days": int(gq["fern"].sum()),
+                         "spread_mean": gq["spread_mean"].mean(), "spread_median": gq["spread_mean"].median(),
+                         "share_da_above_rt": (gq["spread_mean"] > 0).mean(),
+                         "spread_mean_no_fern": nf["spread_mean"].mean(),
+                         "spread_sd_median": gq["spread_sd"].median(), "spread_sd_mean": gq["spread_sd"].mean(),
+                         "spread_sd_mean_no_fern": nf["spread_sd"].mean()})
+    return pd.DataFrame(rows).set_index(["zone", "quintile"])
+
+
+# --------------------------------------------------------------------------
 # Event table (6.7)
 # --------------------------------------------------------------------------
 
@@ -220,6 +248,7 @@ def make_tables(daily: pd.DataFrame, hourly: pd.DataFrame) -> dict[str, pd.DataF
         "representative_table": representative_table(rep, bz),
         "heat_rates_and_load": heat_rates_and_load(daily),
         "gas_sensitivity": gas_sensitivity(daily),
+        "by_temperature_quintile": by_temperature_quintile(daily),
         "event_table": event_table(daily),
     }
 

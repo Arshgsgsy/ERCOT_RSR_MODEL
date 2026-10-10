@@ -2,8 +2,10 @@
 
 Companion to the Build Plan v3.2. This file records what was found while building
 the pipeline and the decisions made along the way that are **not** in the plan
-document. Sessions: **October 3, 2026** (setup, ingest, align, features) and
-**October 8, 2026** (gas re-pull, RSR engine, term-selection notebook).
+document. Sessions: **October 3, 2026** (setup, ingest, align, features),
+**October 8, 2026** (gas re-pull, RSR engine, term-selection notebook) and
+**October 9, 2026** (term selection, HAC size problem and block bootstrap,
+descriptive tables, runner, figures).
 
 - Study window: October 1, 2025 to September 30, 2026 (D4, unchanged).
 - Raw snapshots in use: `data/raw/full/2026-10-03/` for DA, RT, load and
@@ -258,6 +260,193 @@ before any term choice):
 - The very cold days (mostly Winter Storm Fern) sit apart from the rest of the
   data and show up as small separate islands on the masked contour plots.
 
+### 2.9 Term selection (Oct 9, 2026)
+
+Full record: `docs/term_selection.md`; evidence per model in
+`outputs/term_selection/` (from `notebooks/term_evidence.py`, which makes the
+same engine calls as the notebook; the notebook itself was also run top to
+bottom and gives the same numbers).
+
+| Model | Houston | North | South | West | SYSTEM |
+|---|---|---|---|---|---|
+| vol_zone / vol_sys | T, L, L², T·L | T, L, L², T·L | T, L, L², T·L (tie-break) | **T, L, T²** | T, L, L², T·L |
+| lvl_zone / lvl_sys | full quadratic | T, L, L², T·L | T, L, L², T·L | T, L, L², T·L (tie-break) | T, L, L², T·L |
+| lvl_zone_onpeak | full (mirrors lvl_zone) | mirrors | mirrors | mirrors | — |
+
+- **West volatility is the one real difference in shape**: it curves in
+  temperature, not load (dropping T² costs ΔAIC +10.9; the common set is 10.5
+  AIC worse). Its T·L coefficient is positive (+0.56) where the other zones'
+  are negative.
+- **Selected terms are unstable** under block resampling in most zones
+  (Houston volatility 58/38 between two sets, West 43/25/13, North 59/24; South
+  and SYSTEM about 80%). Differences in which terms were picked are therefore
+  not findings; differences in surface shape are.
+- **On-peak Houston's own search result (T, T²) rests on one day**: Jan 26 has
+  leverage 0.59 and Cook's D 1.89; without it the temperature and load roles
+  reverse. Jan 26 has Cook's D 1.8–2.4 in all four on-peak zones.
+
+### 2.10 Winter Storm Fern carries most of the explained variation (Oct 9)
+
+From the runner's diagnostic refit without **Jan 23 – Feb 1, 2026** (10 days,
+2.8% of each sample; columns in `results_table.csv`):
+
+| | Full R², all days | Full R², without Fern | Fern share of explained SS | Shape over ordinary days (corr.) |
+|---|---|---|---|---|
+| vol_zone (4 zones) | 0.206–0.272 | 0.063–0.090 | 0.74–0.76 | **0.97–0.99** |
+| vol_sys | 0.258 | 0.073 | 0.79 | 0.99 |
+| lvl_zone (4 zones) | 0.049–0.091 | 0.007–0.031 | 0.73–0.90 | **−0.54 to +0.83** |
+| lvl_sys | 0.062 | 0.013 | 0.82 | −0.14 |
+
+- **Volatility**: the storm days are high-leverage but fit the surface. Without
+  them the shape over ordinary days is the same; they extend the factor range
+  rather than change the relationship.
+- **Level**: the storm days set the shape. Without them the ordinary-day level
+  surface is nearly flat and in North, South, West and SYSTEM tilts the other
+  way. Level contours must not be read as describing ordinary days.
+- A Fern dummy and Huber/Tukey fits were considered and rejected (research
+  review): the dummy is insignificant for level (p 0.4–0.95) and removes the
+  corner the surface describes; M-estimators do not guard against high-leverage
+  points, and Huber wrongly reported the level surface as stable.
+
+### 2.11 The HAC tests are badly oversized on these designs (Oct 9)
+
+Found by a research review and **verified independently** with
+`notebooks/hac_size_check.py`: real factor values and block, responses
+replaced by noise with every coefficient zero, 1,000 repetitions per case,
+5 designs (four zones and SYSTEM), 4 noise types (iid, AR(1) with each model's
+residual autocorrelation, 25-day blocks of the real volatility and level
+residuals). Results in `outputs/hac_size/size.csv`.
+
+| Test (correct rate 5%) | HAC, lag 25 (pipeline) | OLS control, iid noise |
+|---|---|---|
+| Cubic lack of fit | **27–39%** | 4–5% |
+| Single-term t-tests | **8–40%** | 4–6% |
+
+Cause (Houston and West volatility, iid noise, lack of fit): HAC lag 25 33% / 41%;
+lag 6 16% / 23%; HC0 13% / 18%; **HC3 4.7% / 5.4%**; lag 25 without the Fern days
+30% / 24%. Two effects add up: leverage up to 0.55 (Houston) and 0.77 (West) in
+the cubic design, which Newey–West does not correct, and a long lag used with
+ordinary t and F references (LLSW pair the 1.3√T rule with fixed-b critical
+values). The plan's wording ("may be somewhat too small") understates it.
+
+**Consequence:** every HAC p-value and interval in the plan is too optimistic.
+Tests and intervals now use a block bootstrap (Section 3, Inference).
+
+**Real-data effect** (`outputs/hac_size/real_*.csv`, B = 999):
+- Lack of fit, bootstrap p: volatility 0.23–0.80 (all pass; Houston 0.23–0.26,
+  was 0.021 with HAC); level 0.012–0.078 (South 0.011–0.017 and West
+  0.019–0.029 below 5%; Houston, North, SYSTEM 0.05–0.08; HAC had 10⁻⁸ to 10⁻³);
+  on-peak 0.019–0.17. Stable across 10-, 25- and 50-day blocks.
+- Without the Fern days, level lack of fit is 0.06–0.78 and volatility
+  Houston 0.024–0.037 (the others 0.10–0.24).
+- **Conditional tests: every volatility conclusion survives** (each factor and
+  the linear and interaction groups p ≤ 0.04 in all zones) except West's
+  quadratic group (0.054) and South's (0.31, as with HAC): 22 of the 23
+  volatility tests with HAC p < 0.05 stay below 0.05. **Most level conclusions
+  do not**: of the 21 all-hours level tests (lvl_zone, lvl_sys) with HAC
+  p < 0.05, only 4 stay below 0.05 with the bootstrap: the linear group in
+  Houston (0.033) and South (0.024), South's interaction (0.022) and Houston's
+  T factor (0.048).
+- Bootstrap standard errors are a median 1.6 times the HAC ones (25-day blocks;
+  1.3–1.8 by model, up to about 10 for single coefficients).
+
+**Validation of the bootstrap** (`notebooks/bootstrap_check.py`; same 5
+designs and 4 noise types = 20 cases; 300 repetitions × 199 resamples per case;
+block lengths 10, 25, 50; `outputs/hac_size/bootstrap_size.csv`,
+`bootstrap_coverage.csv`). **It passes.**
+
+| False-rejection rate at nominal 5% | HAC | Bootstrap, 10 / 25 / 50-day blocks |
+|---|---|---|
+| Lack of fit (q = 4) | 26–38%, mean 33% | means 4.4 / 4.2 / 4.4% (range 2.7–6.3%) |
+| Load factor (q = 3) | 18–35%, mean 24% | means 4.4 / 4.5 / 4.8% (range 2.3–7.3%) |
+| T·L term (q = 1) | 10–24%, mean 15% | means 4.2 / 4.3 / 4.6% (range 1.7–7.0%) |
+
+| 95% interval coverage (5 coefficients) | HAC | Bootstrap, 10 / 25 / 50-day blocks |
+|---|---|---|
+| All cases | mean 86%, worst 58% | means 95.1 / 95.3 / 95.2% (range 90–99%) |
+
+- No bootstrap case exceeds 7.5%, the upper edge of the Monte Carlo range for a
+  correct 5% test at 300 repetitions (±1.26 points per case). Averaged over 20
+  cases (error ±0.28 points) the tests run slightly cautious (4.2–4.8%).
+- **West is the one weak spot:** coverage averages 93.2% (25-day blocks), lowest
+  for L² and T·L (91–93%), the terms most affected by its high-leverage cold
+  days. Other zones average 95.4–96.5%. West intervals should be read as
+  roughly 93% intervals.
+- Results do not depend on the block length.
+
+### 2.12 Descriptive tables (Oct 9)
+
+From `tables.py` (complete days; figures written to the run folder):
+
+| | All-hours mean / median ($/MWh) | Share of days DA > RT | On-peak mean | Off-peak mean | Corr. with system | RT basis share \|·\| > $20 |
+|---|---|---|---|---|---|---|
+| Houston | 2.08 / 1.24 | 58.4% | 0.90 | 2.84 | 0.982 | 6.0% |
+| North | 1.61 / 1.55 | 57.6% | 0.09 | 2.96 | 0.988 | 6.7% |
+| South | 0.73 / 1.83 | 60.7% | 0.09 | 1.42 | 0.947 | 7.8% |
+| West | 2.15 / 1.20 | 55.1% | 1.31 | 2.48 | 0.982 | **21.0%** |
+| SYSTEM | 1.55 / 1.22 | 59.0% | 0.43 | 2.44 | — | — |
+
+- Day counts: 361 all-hours and off-peak days, 257 on-peak days per zone.
+- First principal component of the four zones' daily spreads: **95.2%** of the
+  variance.
+- West separates from the rest far more often than the other zones (RT basis
+  5th–95th percentile −$26.5 to +$34.6, mean +$1.49; others about ±$12–17).
+- **Gas sensitivity (D13)**: the lagged and same-date Henry Hub prices differ on
+  223 of 361 days, but zone mean heat rates move by at most 0.02 MMBtu/MWh,
+  daily heat rates correlate 0.988–0.993, and the out-of-range count is 81 in
+  both versions (West 41 → 44, the others one fewer). The gas timing assumption
+  does not matter for any reported number.
+- **Event table** (top 5 days by daily spread SD per zone): Jan 26 is first in
+  every zone (SD $428–558); Jan 25 and Jan 28 follow in most zones. **Mar 23,
+  2026** is in the top 5 in all four zones and SYSTEM (SD about $160–170,
+  mean spread about −$52 to −$59, mild 64–73 °F, ordinary load): a non-Fern RT
+  scarcity event to annotate. Other non-Fern entries: Sep 16 (North), Sep 22
+  (South), Aug 26 (West), Apr 24 (Houston, SYSTEM), May 9 (South).
+- Binned daily spread SD by peak-load decile shows **no clear "flat then
+  steep" rise** in any zone (medians about $5–14 across deciles), so by the
+  plan's rule it is not annotated.
+- **The level is flat apart from Fern** (`by_temperature_quintile.csv`): the
+  coldest fifth of days has a mean daily spread of $7.2–11.8/MWh, but without the
+  Fern days −$2.6 to +$1.4; every other quintile is within about ±$3.2.
+
+### 2.13 Mar 23, 2026 and the peak record (Oct 9)
+
+- **Mar 23, 2026 (Monday)**, from our hourly data: a system-wide evening RT
+  spike. RT rose from about $100 at hour ending 19 to **about $900/MWh at hour
+  ending 22** in all four zones (DA about $109), stayed above $300 at HE23 and
+  fell back by HE24. System load was moderate (peak 62.7 GW at HE18). The zones
+  moved together, so it was not zonal congestion. It fits the evening net-load
+  ramp pattern the market monitor describes; no web source on the specific day
+  was found, so the report describes it without a cause.
+- **Peak record re-checked** (as reference [25] asks): ERCOT's July 2026
+  operational overview lists 91,134 MW on July 22, 2026 at hour ending 18,
+  still marked preliminary; EIA reports 91.1 GW at 6 p.m. CT. Our hourly peak
+  (91,089.5 MW, 5 p.m. CDT = hour ending 18) matches.
+
+### 2.14 Smearing and the contour maps (Oct 9)
+
+- **Residual spread is not constant** (`smearing_check.csv`, chosen
+  surfaces). In the volatility models the residual SD is 1.3–1.9 times larger in
+  the hottest and highest-load quintiles than in the calmest (West is flatter),
+  and larger after RTC+B (0.68–0.76) than before (0.48–0.59). Smearing with
+  each bin's own residuals would move the dollar SD by about −27% to +28%
+  against the pooled factor. Per plan 6.6 the dollar contours are labelled
+  approximate and an unsmeared (median) version is drawn beside them.
+- **Contour maps** (`figures/contours_volatility.png`): the four zones'
+  chosen volatility surfaces on one log dollar scale, masked at radius 0.15.
+  Fern days sit in the cold corner of every zone and carry the highest values
+  (maxima shown $581–1,198/MWh, at the cold edge of the mask; minima $4–8).
+  Saddle points lie inside the data for Houston (70.5 °F, 0.588), North
+  (68.3 °F, 0.587) and SYSTEM (68.3 °F, 0.620); South's lies outside the data
+  and West's surface is a ridge.
+- Level surfaces are not drawn as contour maps: they are weak, shaped by Fern
+  (Section 2.10) and not distinguishable from flat on most bootstrap tests. The
+  temperature-quintile table stands in for them.
+- Mask sensitivity (`contour_radius_sensitivity.csv`): the share of the grid
+  shown is 29–33% at radius 0.10, 38–43% at 0.15 and 46–52% at 0.20. The
+  largest value shown grows with the radius in Houston, North and South (it
+  lies at the extrapolated cold edge); West's does not change.
+
 ---
 
 ## 3. Decisions made in this session (not in the plan)
@@ -268,7 +457,7 @@ before any term choice):
 | Python environment | Python 3.12 in `.venv/` (created with `uv`). Versions pinned in `requirements.txt`: gridstatusio 0.16.0, pandas 3.0.6, pyarrow 25.0.1, numpy 2.5.3, scipy 1.18.1, statsmodels 0.15.0, matplotlib 3.11.2, python-dotenv 1.2.4, pytest 9.1.1 |
 | API key | `GRIDSTATUS_API_KEY` in `.env` (git-ignored). `.env.example` is the template |
 | Data folders | Contents of `data/` are git-ignored; empty `.gitkeep` files keep the folder structure |
-| Test files | `tests/test_ingest.py`, `tests/test_build.py`, `tests/test_rsr.py`, `tests/test_models.py`, `tests/test_data_quality.py` (names chosen here; the plan describes checks, not files) |
+| Test files | `tests/test_ingest.py`, `tests/test_build.py`, `tests/test_rsr.py`, `tests/test_models.py` (names chosen here; the plan describes checks, not files). Added Oct 9: `tests/test_tables.py`, `tests/test_run_all.py`. The empty `tests/test_data_quality.py` was deleted on Oct 9 |
 | **Jupyter for exploration** (Oct 8) | `jupyterlab` 4.6.4 and `ipykernel` 7.4.0 in a separate `requirements-dev.txt`, because the pipeline never needs them. `.ipynb_checkpoints/` is git-ignored. The notebook is saved without outputs |
 
 ### Study window
@@ -344,6 +533,58 @@ before any term choice):
 | Model grid in config | `CONFIG["models"]` holds the five model types (response, transform, factors, labels, sample, priority) and the block. `run_models.prepare_model_data` builds every sample from it |
 | Engine settings | `CONFIG["rsr"]`: search cutoff 0.01, ridge tolerance 0.05, inside radius 0.15 (sensitivity 0.10, 0.20), minimum pure-error df 2 |
 
+### Term selection — Oct 9, 2026
+| Decision | Detail |
+|---|---|
+| **Claude proposed, the owner approved** | Instead of the owner working through the notebook, Claude ran the same calls for all 14 model × zone combinations, proposed terms with a written rule, and the owner approved them. A research agent reviewed the three close calls first (Section 2.9) |
+| **Rule** | NCSS search (R² loss < 0.01), then the reference set **T, L, L², T·L** if it is within 2 AIC of the search result. The reference set is the most common search result (8 of 16 fits). Models within 2 AIC have substantial support (Burnham & Anderson); inference never depends on the choice |
+| AIC guard removed | A first version also required ΔAIC < 2 for each drop. It changed only Houston volatility (kept T², ΔAIC +2.2 while BIC −1.7 and the surfaces are nearly identical), so it was dropped in favour of the plan's D31 |
+| West volatility keeps T, L, T² | Adding T·L (0.6 AIC better) does not make West comparable: its T·L sign is opposite to the other zones and the set still lacks L² |
+| **On-peak rows get no selection of their own** | They mirror the all-hours level terms for the zone, so the robustness comparison is like with like (plan 6.5). Houston's own search result rested on Jan 26 alone |
+| Stored in config | `CONFIG["selected_terms"]`, 14 entries, each with a `why`. All pass the hierarchy check |
+
+### Winter Storm Fern — Oct 9, 2026
+| Decision | Detail |
+|---|---|
+| **Fern stays in the main fit** | As the plan says (7.4). The refit without Jan 23 – Feb 1, 2026 is a diagnostic, now reported as columns of the results table: R² without Fern, Fern share of the explained sum of squares, and the correlation of the two surfaces over ordinary days |
+| No Fern dummy, no robust regression | See Section 2.10 |
+| Report wording | Volatility: the storm extends the range, the shape holds. Level: the storm sets the shape; level contours are not a description of ordinary days |
+
+### Inference: block bootstrap — Oct 9, 2026 (departs from D16/D17)
+| Decision | Detail |
+|---|---|
+| **Why** | The HAC Wald tests reject 27–39% (lack of fit) and 8–40% (single terms) at nominal 5% on these designs (Section 2.11). Owner chose option C (bootstrap all reported inference) over wording only, bootstrapping lack of fit only, or fixed-b HAC (which fixes the lag problem but not leverage) |
+| **Tests** | Residual block bootstrap under the null: fit the model without the tested terms, resample its residuals in circular blocks of consecutive days, add them to its fitted values, refit with the tested terms and recompute the same Wald F. p = (1 + #{F* ≥ F}) / (B + 1). Used for lack of fit and the conditional (group and factor) tests. The statistic is unchanged; only its reference distribution is |
+| **Intervals** | Moving-block pairs bootstrap: resample circular blocks of whole days (response, factors, block column together) and refit by OLS, with the coding frozen from the real fit. Percentile intervals for coefficients and marginal effects. A resample whose design is not full rank (no pre-RTC+B day) is dropped and counted (12 of 999 at 25-day blocks in the runner; up to 6% at 50-day blocks) |
+| Block length | **25 days** (the HAC lag) for the main results; **10 and 50** reported as sensitivity (`bootstrap_sensitivity.csv`). Results so far are stable across the three |
+| Settings | `CONFIG["inference"]`: B = 999, seed 20261009, level 0.95 |
+| HAC values kept | Asymptotic HAC p-values stay in every table beside the bootstrap ones, labelled for comparison only |
+| Fast Wald | The bootstrap computes Newey–West with `rsr.hac_cov`, which reproduces statsmodels' `cov_hac_simple` (tested to 1e-9); statsmodels is too slow for thousands of refits |
+| Smearing | Dollar values use Duan smearing with the residuals of the real fit, applied to each bootstrap draw's own fitted value |
+
+### Tables, figures and runner — Oct 9, 2026
+| Decision | Detail |
+|---|---|
+| `tables.py` (new) | Owner chose a separate module for the descriptive tables: representative spreads (D28), between-zone columns (D36), the compact report table, heat rates and load, gas sensitivity, event table. All on complete days |
+| Event table in the main build | From the optional phase; no new data, and it is the clearest way to show Fern and Mar 23. Events are annotated only in the report, after ranking |
+| Representative spreads use complete days | Factor completeness is not required for a descriptive spread statistic. All four zones are 361 days either way |
+| Marginal-effect days | The observed days nearest the 5th and 95th temperature percentiles (cold, hot) and nearest 65 °F (mild), per model sample. Slopes from the full quadratic, in response units and in $/MWh per °F and per GW (load reference = the zone's 99.5th percentile MW) |
+| Fitted range | Reported for the chosen (descriptive) surface, in response units and dollars, with dates |
+| Diagnostics figures | One per response (volatility, level) for the four zones; residuals vs fitted, over time, normal probability plot |
+| Fixed zone colours | Houston green, North blue, South red, West brown, SYSTEM grey, in every figure |
+| `run_all.py` | build → tables → models → figures into `outputs/<run_id>/` (UTC start time). Never overwrites a run folder. `run.json` is written last and records snapshot, raw and processed checksums, git commit and uncommitted files, package versions, seed, decision IDs and a checksum for every output. `--skip-build` reuses `data/processed` and says so in `run.json` |
+| Output folders | `outputs/term_selection/` (term evidence) and `outputs/hac_size/` (size checks) are evidence produced before the run, kept outside the run folders |
+| **Smearing check** | `smearing_check.csv`: residual SD by temperature and load quintile and by block value, and the dollar value with each bin's own residuals against the pooled ones. Summary columns in `results_table.csv` |
+| **Contour maps draw the chosen terms** | The descriptive surface (owner's terms), not the full quadratic, as D31 intends. Refitted in `figures.py` (deterministic, same fit as the runner). Fern days marked with a red ×; stationary point marked only if inside the data. Grid values saved as CSV beside each figure |
+| Dollar contours labelled approximate; unsmeared beside | Because residual spread changes across the factors (plan 6.6) |
+| Shared log colour scale | Values span about $4 to $1,200/MWh; a linear scale would show nothing outside the Fern corner. The system map uses the zones' limits |
+| **No level contour maps** (owner confirmed Oct 9) | See Section 2.14; `by_temperature_quintile.csv` instead |
+| `tests/test_data_quality.py` deleted (owner, Oct 9) | It was empty. The structural data checks are build gates in `build.py` (`exit_checks`, `feature_checks`), which stop the build, so a separate offline test file added nothing |
+| Level summary table | `tables.by_temperature_quintile`: spread level and SD by each zone's temperature quintile, with and without the Fern days |
+| `facts.py` (new step in `run_all.py`) | `facts.csv`/`facts.md`: about 360 reportable numbers, each with file, row and column, for writing and the final number check. `report_tables.md`: the results and representative spread tables rounded for the page |
+| README | Rewritten: summary, setup, how to run, layout, inference, future-work list (from plan 6.7), limitations |
+| **First real run** | `outputs/2026-10-10T0019Z/` (Oct 10, 00:19 UTC): full rebuild from the raw snapshot, every gate passed, 32 files, about 50 s. Made before the latest code was committed, so `run.json` lists the uncommitted files; rerun after committing for a clean record |
+
 ---
 
 ## 4. Open items
@@ -364,18 +605,26 @@ As expected, the Oct 3 gas file no longer matches the config's gas query, so
 `ingest.py full --snapshot 2026-10-03` now stops on gas. It is kept for the
 record; the build reads gas only from `2026-10-08`.
 
-### 4.2 Term selection (owner)
-Run `notebooks/explore_terms.ipynb` for each model and zone (8 main models,
-then the 6 second-priority ones) and paste each choice into
-`CONFIG["selected_terms"]`. Start Jupyter from the project folder:
-`.venv/bin/jupyter lab notebooks/explore_terms.ipynb`.
+### 4.2 Term selection: done on Oct 9, 2026
+All 14 entries are in `CONFIG["selected_terms"]` (Section 2.9 and
+`docs/term_selection.md`). The notebook stays as the tool for checking any one
+model by hand.
 
-### 4.3 Next build steps
-- The rest of `run_models.py` (Build Plan 6.5): fit every model in priority
-  order, using the owner's terms for the descriptive model and the full
-  quadratic for inference, and write the tables and `run.json`.
-- Investigate the 81 heat-rate days in `imhr_outside_range.csv` (plan 6.3 exit
-  check).
+### 4.3 Done on Oct 9, 2026
+Bootstrap validation, smearing check, contour maps, temperature-quintile
+table, facts sheet and report tables, README, notebook re-run (runs cleanly
+with the approved terms), Mar 23 annotation, peak record re-check, first real
+run.
+
+### 4.4 Open as of Oct 10, 2026
+- **Commit, then rerun `python run_all.py`** so the final run's `run.json`
+  points at a clean commit. Push to GitHub (the report links the repository).
+- The notebook file is saved with outputs; decide whether to clear them.
+- The 81 heat-rate days: described in Section 2.7 (renewable surpluses in West,
+  RT scarcity days); a paragraph in the Data section closes the exit check.
+- Optional phase (forecast error, net load, West basis): needs new pulls; the
+  owner's call.
+- The report itself.
 
 ---
 
@@ -387,9 +636,23 @@ then the 6 second-priority ones) and paste each choice into
   the script from stdin. Pass the path explicitly (`load_dotenv(ROOT / ".env")`).
 - **Running `ingest.py` directly**: the `__main__` block re-imports the module
   as `ingest`, so `ingest_checks` shares one copy of it.
-- Tests: 86 offline tests (20 ingest; 31 build, of which 19 cover `align()`
-  and 12 cover `make_features()`; 27 engine; 8 model preparation), none
-  touching `data/` or the API. Run with `python -m pytest -q`.
+- Tests: 86 offline tests on Oct 8 (20 ingest; 31 build, of which 19 cover
+  `align()` and 12 cover `make_features()`; 27 engine; 8 model preparation).
+  **105 on Oct 9**: + 7 engine bootstrap tests (fast HAC against statsmodels,
+  fast Wald, block indices, test statistic and power, pairs bootstrap on a
+  noise-free surface), + 4 runner tests (dollar back-transform, marginal effects
+  against the engine, a full `run_one`), 6 table tests, 2 `run_all` tests. Then
+  the smearing check and the temperature-quintile table: **107 tests**. None
+  touches `data/` or the API except `test_git_state` (reads git). `facts.py`
+  has no test (it only reformats run outputs; checked on two runs). Run with
+  `python -m pytest -q`.
+- `test_selected_terms_must_be_hierarchical` assumed `selected_terms` was empty;
+  it now removes the entry it needs with `monkeypatch.delitem`.
+- **`run.json` bug caught in the dev run**: `git status --porcelain` output was
+  `.strip()`ped, which removed the leading space of the first line and cut the
+  first letter of the first file name. Now `.rstrip()` only, with a test.
+- The notebook is currently saved **with** outputs (the Oct 8 entry above says
+  without); to be settled when it is re-run.
 - **Engine bug caught by the tests** (Oct 8): fitted values and residuals were
   built with `pd.Series(statsmodels_series, index=dates)`. pandas aligned the
   statsmodels 0..n−1 index with the date index and returned all NaN. Fixed by

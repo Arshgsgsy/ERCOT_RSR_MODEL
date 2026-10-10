@@ -2,8 +2,8 @@
 
 Status: **approved by the owner on October 9, 2026** and entered in
 `CONFIG["selected_terms"]`. Decisions 1–4 below follow a research review of the
-close calls (Section 3). Decision 5 (level lack of fit) waits on a check of the
-HAC tests (Section 4.2).
+close calls (Section 3). Decision 5 (inference) was settled the same day
+(Section 4.2).
 
 Evidence: `outputs/term_selection/<model>__<zone>.md` and `.png` (one per
 model), `outputs/term_selection/summary.csv`. Produced by
@@ -122,14 +122,15 @@ From the research review (to be reproduced by the runner before it is quoted):
   (correlation −0.19 to −0.53; Houston +0.70). Level contours should not be read
   as describing ordinary days.
 
-### 4.2 Lack of fit and HAC p-values (decision 5, pending)
+### 4.2 Lack of fit and HAC p-values (decision 5: option C, Oct 9, 2026)
 
-The asymptotic cubic lack-of-fit test rejects every level model (p 0.009 to
-4 × 10⁻⁸) and passes volatility except Houston (0.021). The research review
-reports that on these designs the HAC tests are badly oversized (lack of fit
-rejects 33–40% at nominal 5%; single coefficients 8–22%), and that a
-block-bootstrap calibration gives volatility p 0.25–0.77 and level p 0.03–0.09.
-**This is being verified independently before any decision.**
+The HAC tests were verified to be badly oversized on these designs (lack of
+fit 27–39%, single terms 8–40% at nominal 5%). The owner chose option C: all
+reported tests and intervals use a block bootstrap (25-day blocks; 10 and 50 as
+sensitivity), validated at 4.2–4.8% false rejections and 95% coverage (West
+about 93%). With it, lack of fit passes for every volatility model (p
+0.26–0.79) and is marginal for level (p 0.011–0.082). Details in
+`docs/findings_and_decisions.md`, Sections 2.11 and 3 (Inference).
 
 ### 4.3 Shapes
 
