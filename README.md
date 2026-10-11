@@ -38,6 +38,8 @@ spends API requests.
 python ingest.py access            # measure account limits -> data/raw/access.json
 python ingest.py test              # one-week trial pulls -> data/raw/test/
 python ingest.py full --snapshot 2026-10-03   # the full year -> data/raw/full/<snapshot>/
+python ingest.py test --only load_fcst        # optional phase: load forecast, trial week
+python ingest.py full --only load_fcst --snapshot 2026-10-11
 
 # 2. Rebuild everything from the raw snapshot named in config.py
 python run_all.py                  # build -> tables -> models -> figures -> facts -> outputs/<run_id>/
@@ -74,6 +76,7 @@ folder.
 | `notebooks/explore_terms.ipynb` | Interactive term choice for one model at a time |
 | `notebooks/term_evidence.py` | Term-selection evidence for all models → `outputs/term_selection/` |
 | `notebooks/hac_size_check.py`, `bootstrap_check.py`, `bootstrap_real.py` | Size and coverage checks of the HAC and bootstrap inference → `outputs/hac_size/` |
+| `notebooks/out_of_sample_check.py` | Leave-one-day/week/month-out R² of every surface → `outputs/out_of_sample/` |
 | `docs/findings_and_decisions.md` | Everything found while building and every decision not in the plan |
 | `docs/term_selection.md` | The chosen descriptive terms and why |
 | `data/raw`, `data/interim`, `data/processed` | Raw snapshots (immutable, with manifests), the hourly panel, features and the daily table. Git-ignored |
@@ -91,13 +94,24 @@ bootstrap under the null** and intervals a **moving-block pairs bootstrap**
 beside them for comparison. The full quadratic is the model for inference; the
 chosen reduced terms only define the surface that is drawn.
 
+## Optional phase: load forecast error as a third factor
+
+`lvl_zone_fe`, `vol_zone_fe`, `lvl_sys_fe` and `vol_sys_fe` refit the main
+models with a third factor F, the day-ahead load forecast error (ERCOT's
+forecast from the 9:30 a.m. report the day before, checked against the
+10 a.m. bid-close rule row by row): the signed daily mean for level and the
+daily RMS for volatility, in % of forecast. They run last, in the same tables,
+and each results row compares the model with its two-factor base on the same
+days. The two-factor models, their terms, figures and facts are unchanged and
+are still produced by every run. Without a forecast in the snapshot, the
+F models are skipped. Findings: `docs/findings_and_decisions.md`, Section 2.15.
+
 ## Not done (future work)
 
 What each would need to be done properly:
 
 | Item | What it would need |
 |---|---|
-| Three-factor zone models with the load forecast error | The day-ahead load forecast (latest vintage at or before 10 a.m. Central the day before), checked row by row |
 | Net-load system model | System wind and solar actuals and forecasts |
 | West basis model | West load-zone wind; the basis is its own descriptive response, not a stacked test |
 | Load-weighted zone temperature | Weather-zone load |
@@ -118,5 +132,9 @@ What each would need to be done properly:
   Houston rests on Coast alone.
 - About ten Winter Storm Fern days carry most of the explained variation; the
   level surfaces in particular are shaped by them.
-- The surfaces use two factors and cannot separate expected conditions from
-  surprises.
+- The surfaces explain; they do not predict. Out of sample (leave one week out)
+  the volatility surfaces keep R² 0.14–0.20 through the stress days, but are
+  about 0 on ordinary days. The level surfaces do worse than a constant.
+- The main surfaces use two factors and cannot separate expected conditions
+  from surprises. The optional F models add the load forecast surprise only; it
+  is realized, so its link to spreads is an association.

@@ -9,14 +9,15 @@ _checks.json. ingest.py calls these from its command line.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 from pathlib import Path
 
 import pandas as pd
 
 from ingest import (
-    CONFIG, GS, PATHS, REQUIRED, IngestError,
-    cache_status, call, file_paths, local_hours, make_pull, plan_pulls, usage, write_json,
+    CONFIG, GS, OPTIONAL, PATHS, REQUIRED, IngestError,
+    cache_status, call, file_paths, forecast_deadline, local_hours, make_pull, plan_pulls, usage, write_json,
 )
 
 
@@ -42,12 +43,14 @@ def trial_pulls(only: list[str] | None = None) -> list[dict]:
 # Gates and the row budget
 # --------------------------------------------------------------------------
 
-def require_gates(stage: str) -> None:
-    """Access before trial, trial before full (Build Plan, Section 8)."""
+def require_gates(stage: str, only: list[str] | None = None) -> None:
+    """Access before trial, trial before full (Build Plan, Section 8). A full pull
+    of an optional dataset also needs that dataset's own trial file."""
     if not PATHS["access"].exists():
         raise IngestError("Run `python ingest.py access` first.")
     if stage == "full":
-        for p in trial_pulls():
+        names = [*REQUIRED, *(k for k in only or [] if k in OPTIONAL)]
+        for p in trial_pulls(names):
             if cache_status(PATHS["raw_test"], p["name"], p["query"]) != "reuse":
                 raise IngestError(f"Trial file {p['name']} is missing. Run `python ingest.py test` first.")
 
@@ -175,6 +178,23 @@ def vintage_check(df: pd.DataFrame) -> dict:
     }
 
 
+def forecast_vintage_check(df: pd.DataFrame) -> dict:
+    """D8, per row: one row per operating hour, each published at or before 10 a.m.
+    Central the day before. Also how far ahead of the deadline the vintages are."""
+    start = pd.to_datetime(df["interval_start_utc"], utc=True)
+    pub = pd.to_datetime(df["publish_time_utc"], utc=True)
+    margin_h = (forecast_deadline(start) - pub).dt.total_seconds() / 3600
+    pub_local = pub.dt.tz_convert(CONFIG["study"]["tz"])
+    return {
+        "duplicate_hours": int(start.duplicated().sum()),
+        "rows_after_deadline": int((margin_h < 0).sum()),
+        "hours_before_deadline": {"min": float(margin_h.min()), "median": float(margin_h.median()),
+                                  "max": float(margin_h.max())},
+        "publish_local_hour_counts": {str(k): int(v) for k, v in pub_local.dt.hour.value_counts().sort_index().items()},
+        "distinct_publish_times": int(pub.nunique()),
+    }
+
+
 def check_file(p: dict, df: pd.DataFrame) -> tuple[list[str], dict]:
     """Returns (gate failures, findings) for one file."""
     fails, info = [], {"rows": len(df), "expected_rows": p["expected_rows"]}
@@ -205,6 +225,20 @@ def check_file(p: dict, df: pd.DataFrame) -> tuple[list[str], dict]:
             fails.append(f"{p['name']}: weather-zone columns {missing} not found")
         if p["name"] == "temperature_all_vintages":
             info["vintage_check"] = vintage_check(df)
+    elif p["key"] == "load_fcst":
+        info["columns"] = list(df.columns)
+        missing = [z["load_column"] for k, z in CONFIG["zones"].items() if k != "decision"
+                   and z["load_column"] not in df.columns]
+        if missing:
+            fails.append(f"{p['name']}: forecast columns {missing} not found")
+        if "publish_time_utc" not in df.columns or "interval_start_utc" not in df.columns:
+            fails.append(f"{p['name']}: publish_time_utc or interval_start_utc missing")
+        else:
+            info.update(forecast_vintage_check(df))
+            if info["duplicate_hours"]:
+                fails.append(f"{p['name']}: {info['duplicate_hours']} operating hours have more than one row")
+            if info["rows_after_deadline"]:
+                fails.append(f"{p['name']}: {info['rows_after_deadline']} rows published after the D8 deadline")
     elif p["key"] == "gas":
         info["series"] = sorted(df["series"].unique()) if "series" in df.columns else None
         info["units"] = sorted(df["units"].unique()) if "units" in df.columns else None
@@ -217,6 +251,8 @@ def check_file(p: dict, df: pd.DataFrame) -> tuple[list[str], dict]:
 
 
 def run_checks(pulls: list[dict], folder: Path) -> None:
+    """Checks the pulled files and merges the result into the folder's _checks.json,
+    so checking one dataset (e.g. --only load_fcst) keeps the other files' records."""
     all_fails, findings = [], {}
     for p in pulls:
         pq, _ = file_paths(folder, p["name"])
@@ -226,12 +262,20 @@ def run_checks(pulls: list[dict], folder: Path) -> None:
         fails, info = check_file(p, pd.read_parquet(pq))
         all_fails += fails
         findings[p["name"]] = info
+    path = folder / "_checks.json"
+    old = json.loads(path.read_text()) if path.exists() else {}
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    history = old.get("history", [])
+    if old:
+        history.append({"checked_at_utc": old.get("checked_at_utc"), "files": sorted(old.get("files", {})),
+                        "gate_failures": old.get("gate_failures", [])})
     summary = {
-        "checked_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "checked_at_utc": now,
         "gate_failures": all_fails,
-        "files": findings,
+        "files": {**old.get("files", {}), **findings},
+        "history": history,
     }
-    write_json(folder / "_checks.json", summary)
+    write_json(path, summary)
     print(f"Wrote {folder / '_checks.json'}")
     for f in all_fails:
         print(f"  GATE FAILED: {f}")

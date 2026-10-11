@@ -1,13 +1,16 @@
 """Step 1 — Ingest (Build Plan, Section 6.1).
 
 Pulls the five required Grid Status datasets onto disk once, unchanged, with a
-manifest beside every file. Run on its own, never by run_all.py, so a rebuild
+manifest beside every file. Optional datasets (Build Plan 6.7) are pulled only
+when named with --only. Run on its own, never by run_all.py, so a rebuild
 never spends API requests or rows.
 
     python ingest.py access                  # limits + dataset access -> data/raw/access.json
     python ingest.py test                    # one-week trial -> data/raw/test/
     python ingest.py full                    # full year -> data/raw/full/<snapshot>/
     python ingest.py full --only gas --snapshot 2026-10-08
+    python ingest.py test --only load_fcst   # optional dataset: trial week first
+    python ingest.py full --only load_fcst --snapshot 2026-10-11
 
 --dry-run lists the planned pulls, expected rows and cache status without
 calling the API. Each stage stops on the first failure.
@@ -35,6 +38,7 @@ from config import CONFIG, ROOT
 GS = CONFIG["gridstatus"]
 PATHS = CONFIG["paths"]
 REQUIRED = {k: v for k, v in CONFIG["datasets"].items() if v["priority"] == "required"}
+OPTIONAL = {k: v for k, v in CONFIG["datasets"].items() if v["priority"] == "optional"}
 
 
 class IngestError(RuntimeError):
@@ -90,16 +94,18 @@ def check_chunks() -> None:
 
 
 def plan_pulls(stage: str, only: list[str] | None = None) -> list[dict]:
-    """The required files for a stage. The trial's extra all-vintage temperature
-    pull is added by ingest_checks.trial_pulls."""
+    """The required files for a stage, or only the named ones. Optional datasets
+    are planned only when named. The trial's extra all-vintage temperature pull
+    is added by ingest_checks.trial_pulls."""
+    known = {**REQUIRED, **OPTIONAL}
     if only:
-        unknown = set(only) - set(REQUIRED)
+        unknown = set(only) - set(known)
         if unknown:
-            raise IngestError(f"--only got unknown datasets {sorted(unknown)}; choose from {sorted(REQUIRED)}")
+            raise IngestError(f"--only got unknown datasets {sorted(unknown)}; choose from {sorted(known)}")
     window = CONFIG["test_week"] if stage == "test" else CONFIG["study"]
     pulls = []
-    for key, spec in REQUIRED.items():
-        if only and key not in only:
+    for key, spec in known.items():
+        if (only and key not in only) or (not only and key in OPTIONAL):
             continue
         if stage == "full" and spec.get("chunks"):
             pulls += [make_pull(f"{key}_{c}", key, s, e) for c, s, e in spec["chunks"]]
@@ -108,6 +114,15 @@ def plan_pulls(stage: str, only: list[str] | None = None) -> list[dict]:
         else:
             pulls.append(make_pull(key, key, window["start"], window["end"]))
     return pulls
+
+
+def forecast_deadline(interval_start_utc: pd.Series) -> pd.Series:
+    """Latest allowed publish time (UTC) for a forecast of each operating hour:
+    `local_time` Central on the day `days_before` the hour's local operating day (D8)."""
+    rule, tz = CONFIG["align"]["forecast_deadline"], CONFIG["study"]["tz"]
+    day = pd.to_datetime(interval_start_utc, utc=True).dt.tz_convert(tz).dt.tz_localize(None).dt.normalize()
+    deadline = day - pd.Timedelta(days=rule["days_before"]) + pd.Timedelta(rule["local_time"] + ":00")
+    return deadline.dt.tz_localize(tz).dt.tz_convert("UTC")
 
 
 def stage_folder(stage: str, snapshot: str) -> Path:
@@ -280,15 +295,13 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stage", choices=["access", "test", "full"])
-    ap.add_argument("--only", nargs="+", metavar="DATASET", help=f"pull only these: {', '.join(REQUIRED)}")
+    ap.add_argument("--only", nargs="+", metavar="DATASET",
+                    help=f"pull only these: {', '.join(REQUIRED)}; optional: {', '.join(OPTIONAL)}")
     ap.add_argument("--snapshot", default=dt.date.today().isoformat(), help="full-pull folder name (default: today)")
     ap.add_argument("--dry-run", action="store_true", help="show planned pulls without calling the API")
-    ap.add_argument("--optional", action="store_true", help="optional datasets (not implemented yet)")
     args = ap.parse_args(argv)
 
     try:
-        if args.optional:
-            raise IngestError("--optional is not implemented. It waits until the main deliverable is done (6.7).")
         check_chunks()
         if args.stage == "access":
             if args.dry_run:
@@ -306,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {status:8s} {p['name']:26s} ~{p['expected_rows']:>8,} rows  {p['query']}")
             return 0
 
-        checks.require_gates(args.stage)
+        checks.require_gates(args.stage, args.only)
         run_pulls(make_client(), args.stage, pulls, folder, args.snapshot if args.stage == "full" else None,
                   preflight=checks.preflight)
         checks.run_checks(pulls, folder)

@@ -12,7 +12,9 @@ the assignment asks for, hourly and then daily. Model transforms (asinh, the
 model-sample MAD) belong to run_models.py.
 
 Outputs in data/interim/:
-    hourly_panel.parquet     the panel (4 zones x 8,760 hours)
+    hourly_panel.parquet     the panel (4 zones x 8,760 hours). The optional load
+                             forecast columns are empty when the snapshot has no
+                             forecast file; nothing else depends on them
     align_report.json        inputs and checksums, repairs, gaps, coverage summary
     coverage.csv             non-empty count and share for every column by zone
     rt_complete_by_month.csv complete RT hours by zone and month
@@ -35,7 +37,7 @@ import numpy as np
 import pandas as pd
 
 from config import CONFIG, ROOT
-from ingest import IngestError, cache_status, file_paths, plan_pulls, sha256, write_json
+from ingest import OPTIONAL, IngestError, cache_status, file_paths, forecast_deadline, plan_pulls, sha256, write_json
 
 TZ = CONFIG["study"]["tz"]
 ALIGN = CONFIG["align"]
@@ -60,9 +62,11 @@ def snapshot_for(key: str, default: str | None = None) -> str:
 
 def load_snapshot(default: str | None = None) -> tuple[dict[str, pd.DataFrame], list[dict]]:
     """Read every required raw file after verifying its manifest, query and
-    checksum against config.py. Returns the frames and the input record."""
+    checksum against config.py. Returns the frames and the input record.
+    Optional files (the load forecast) are read the same way if their snapshot
+    has them; if not, they are left out and only the models that need them stop."""
     raw, inputs = {}, []
-    for key in ("da", "rt", "load", "temperature", "gas"):
+    for key in ("da", "rt", "load", "temperature", "gas", *OPTIONAL):
         folder = PATHS["raw_full"] / snapshot_for(key, default)
         frames = []
         for p in plan_pulls("full", [key]):
@@ -71,12 +75,16 @@ def load_snapshot(default: str | None = None) -> tuple[dict[str, pd.DataFrame], 
             except IngestError as e:
                 raise BuildError(str(e)) from e
             pq, mf = file_paths(folder, p["name"])
+            if status != "reuse" and key in OPTIONAL:
+                print(f"Optional input {key} not in snapshot {folder.name}; its columns stay empty.")
+                break
             if status != "reuse":
                 raise BuildError(f"{pq} is missing. Run `python ingest.py full` first.")
             frames.append(pd.read_parquet(pq))
             inputs.append({"file": str(pq.relative_to(ROOT)),
                            "sha256": json.loads(mf.read_text())["sha256"]})
-        raw[key] = pd.concat(frames, ignore_index=True)
+        if frames:
+            raw[key] = pd.concat(frames, ignore_index=True)
     return raw, inputs
 
 
@@ -198,6 +206,34 @@ def prep_load(load: pd.DataFrame, report: dict) -> tuple[pd.DataFrame, pd.DataFr
             "max_abs": round(float(np.nanmax(np.abs(diff))), 3),
             "mean": round(float(np.nanmean(diff)), 3),
         }
+    return zonal, system
+
+
+def prep_load_fcst(fc: pd.DataFrame, report: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Optional phase. Day-ahead zone load forecast, one vintage per operating hour,
+    each published at or before 10 a.m. Central the day before (D8). The rule is
+    checked again here, row by row; a later vintage stops the build. System
+    forecast is the sum of the four zones, like sys_load."""
+    check_interval_length(fc, 60, "load_fcst")
+    hour = utc(fc[find_col(fc, ["interval_start_utc"], "load_fcst start")])
+    if hour.duplicated().any():
+        raise BuildError("load_fcst: more than one forecast vintage for an hour")
+    pub = utc(fc[find_col(fc, ["publish_time_utc"], "load_fcst publish time")])
+    margin = (forecast_deadline(hour) - pub).dt.total_seconds() / 3600
+    if (margin < 0).any():
+        raise BuildError(f"load_fcst: {int((margin < 0).sum())} hours use a forecast published after the "
+                         f"D8 deadline (first: {hour[margin < 0].min()})")
+    cols = {z["location"]: find_col(fc, [z["load_column"]], f"load_fcst {z['location']}") for z in ZONES.values()}
+    wide = pd.DataFrame({loc: fc[c].astype(float).values for loc, c in cols.items()}, index=hour)
+    zonal = wide.rename_axis("hour_utc").reset_index().melt("hour_utc", var_name="zone", value_name="load_fcst")
+    zonal = zonal.merge(pd.DataFrame({"hour_utc": hour.reset_index(drop=True), "load_fcst_publish": pub.reset_index(drop=True)}), on="hour_utc")
+    system = pd.DataFrame({"hour_utc": hour.reset_index(drop=True),
+                           "sys_load_fcst": wide.sum(axis=1, min_count=len(cols)).values})
+    report["load_fcst"] = {
+        "hours": int(len(hour)),
+        "hours_before_deadline": {"min": float(margin.min()), "max": float(margin.max())},
+        "publish_local_hours": sorted(int(h) for h in pub.dt.tz_convert(TZ).dt.hour.unique()),
+    }
     return zonal, system
 
 
@@ -331,7 +367,8 @@ def prep_gas(gas: pd.DataFrame, days: pd.Series, report: dict) -> pd.DataFrame:
 
 COLUMNS = ["zone", "hour_utc", "local_date", "expected_hours",
            "da_price", "rt_n", "rt_complete", "rt_price", "rt_price_partial", "rt_intrahour_sd",
-           "load", "sys_load", "temp", "temp_range", "temp_n", "temp_dst_fix",
+           "load", "sys_load", "load_fcst", "load_fcst_publish", "sys_load_fcst",
+           "temp", "temp_range", "temp_n", "temp_dst_fix",
            "gas_price", "gas_obs_date", "gas_price_same"]
 
 
@@ -348,6 +385,13 @@ def align(raw: dict[str, pd.DataFrame], start: str | None = None, end: str | Non
     zonal_load, sys_load = prep_load(raw["load"], report)
     panel = merge_checked(panel, zonal_load, ["zone", "hour_utc"], "one_to_one", "load", report)
     panel = merge_checked(panel, sys_load, ["hour_utc"], "many_to_one", "sys_load", report)
+    if "load_fcst" in raw:
+        zonal_fc, sys_fc = prep_load_fcst(raw["load_fcst"], report)
+        panel = merge_checked(panel, zonal_fc, ["zone", "hour_utc"], "one_to_one", "load_fcst", report)
+        panel = merge_checked(panel, sys_fc, ["hour_utc"], "many_to_one", "sys_load_fcst", report)
+    else:
+        panel["load_fcst"], panel["sys_load_fcst"] = np.nan, np.nan
+        panel["load_fcst_publish"] = pd.Series(pd.NaT, index=panel.index, dtype="datetime64[ns, UTC]")
     temp = prep_temperature(raw["temperature"], hours, report)
     panel = merge_checked(panel, temp, ["zone", "hour_utc"], "one_to_one", "temperature", report)
     gas = prep_gas(raw["gas"], hours["local_date"], report)
@@ -388,6 +432,9 @@ def exit_checks(panel: pd.DataFrame, start: str, end: str) -> list[str]:
     g = panel.dropna(subset=["gas_obs_date"])
     if (g["gas_obs_date"] >= g["local_date"]).any():
         fails.append("a gas observation date is not before its flow day")
+    f = panel.dropna(subset=["load_fcst_publish"])
+    if (f["load_fcst_publish"] > forecast_deadline(f["hour_utc"])).any():
+        fails.append("a load forecast was published after its D8 deadline")
     return fails
 
 
@@ -438,7 +485,8 @@ def run_align(snapshot: str | None = None) -> pd.DataFrame:
 
     report = {
         "built_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "snapshot": {k: snapshot_for(k, snapshot) for k in ("da", "rt", "load", "temperature", "gas")},
+        "snapshot": {k: snapshot_for(k, snapshot) for k in ("da", "rt", "load", "temperature", "gas", *raw)
+                     if k in raw},
         "inputs": inputs,
         "settings": {"study": CONFIG["study"], "align": ALIGN, "zones": CONFIG["zones"],
                      "weather_zone_map": CONFIG["weather_zone_map"]},
@@ -466,6 +514,8 @@ def run_align(snapshot: str | None = None) -> pd.DataFrame:
     print(f"Gas: last observation {report['gas']['last_observation']}; "
           f"no lagged price on {report['gas']['flow_days_without_lagged_price']}; "
           f"no same-date price on {report['gas']['flow_days_without_same_date_price']}")
+    if "load_fcst" in report:
+        print(f"Load forecast: {report['load_fcst']}")
     if "sys_load_minus_published_total_mw" in report:
         print(f"sys_load minus published total (MW): {report['sys_load_minus_published_total_mw']}")
     print("\nRows to hand-trace against the raw files (LZ_NORTH):")
@@ -540,6 +590,12 @@ def hourly_features(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     load_ref = hf.groupby("zone")["load"].quantile(q)
     hf["load_norm"] = hf["load"] / hf["zone"].map(load_ref)
 
+    # Optional phase: load forecast error, actual minus forecast, in MW and in % of
+    # forecast (Build Plan 5.3). Empty where either is missing.
+    hf["fe"] = hf["load"] - hf["load_fcst"]
+    hf["fe_pct"] = 100 * hf["fe"] / hf["load_fcst"]
+    hf["sys_fe_pct"] = 100 * (hf["sys_load"] - hf["sys_load_fcst"]) / hf["sys_load_fcst"]
+
     base = FEAT["degree_day_base_f"]
     hf["cdd_h"] = (hf["temp"] - base).clip(lower=0)
     hf["hdd_h"] = (base - hf["temp"]).clip(lower=0)
@@ -574,6 +630,8 @@ def summarize_day(g: pd.DataFrame, cols: dict) -> dict:
     da, rt = g[cols["da"]], g[cols["rt"]]
     n_spread = int(spread.notna().sum())
     n_temp, n_load = int(temp.notna().sum()), int(load.notna().sum())
+    fe = g[cols["fe"]]
+    n_fe = int(fe.notna().sum())
     return {
         "expected_hours": expected,
         "n_spread_hours": n_spread,
@@ -607,15 +665,21 @@ def summarize_day(g: pd.DataFrame, cols: dict) -> dict:
         "hdd": (FEAT["degree_day_base_f"] - temp).clip(lower=0).mean(),
         "temp_range_mean": g["temp_range"].mean() if cols["temp_range"] else np.nan,
         "n_temp_repaired_hours": int(g["temp_dst_fix"].sum()),
+        # Optional phase: daily load forecast error, only when every expected hour
+        # has one (5.4). Signed mean for level models, RMS for volatility models.
+        "n_fcst_hours": n_fe,
+        "fcst_complete": n_fe == expected,
+        "fe_pct_mean": fe.mean() if n_fe == expected else np.nan,
+        "fe_pct_rms": float(np.sqrt((fe ** 2).mean())) if n_fe == expected else np.nan,
     }
 
 
 def daily_table(hf: pd.DataFrame, refs: dict) -> pd.DataFrame:
     """One row per zone per local day, plus one SYSTEM row per day (5.4)."""
     zone_cols = {"spread": "spread", "da": "da_price", "rt": "rt_price", "load": "load",
-                 "temp": "temp", "intrahour": True, "temp_range": True}
+                 "temp": "temp", "intrahour": True, "temp_range": True, "fe": "fe_pct"}
     sys_cols = {"spread": "sys_spread", "da": "sys_da_price", "rt": "sys_rt_price", "load": "sys_load",
-                "temp": "sys_temp", "intrahour": False, "temp_range": False}
+                "temp": "sys_temp", "intrahour": False, "temp_range": False, "fe": "sys_fe_pct"}
 
     rows = []
     for (zone, day), g in hf.groupby(["zone", "local_date"], sort=True):
@@ -690,8 +754,35 @@ def feature_checks(hf: pd.DataFrame, daily: pd.DataFrame) -> tuple[list[str], di
         "share_days_load_peak_norm_above_1": by["load_peak_norm"].apply(lambda s: round(float((s > 1).mean()), 4)).to_dict(),
         "imhr_outside_typical_range": {"range": [lo, hi], "zone_days": len(outside)},
         "spread_by_rtcb_regime_descriptive": {f"{z}|{r}": v for (z, r), v in regime.to_dict("index").items()},
+        "load_forecast_error": forecast_error_findings(daily, usable),
     }
     return fails, findings, outside
+
+
+def forecast_error_findings(daily: pd.DataFrame, usable: pd.Series) -> dict:
+    """Optional phase, descriptive: how the daily forecast error is spread, how it
+    moves with the main factors and across December 5 (RTC+B changed what actual
+    load includes, Build Plan 6.2). Empty when no forecast was loaded."""
+    fc = usable & daily["fcst_complete"]
+    if not fc.any():
+        return {"available": False}
+    d = daily[fc]
+    post = d["post_rtcb"].map({1: "post_rtcb", 0: "pre_rtcb"})
+    by = d.groupby("zone")
+    q = lambda s: s.quantile([0.05, 0.5, 0.95]).round(3).tolist()
+    return {
+        "available": True,
+        "model_days": by.size().astype(int).to_dict(),
+        "days_without_full_forecast": {z: [str(x.date()) for x in g.loc[usable[g.index] & ~g["fcst_complete"], "local_date"]]
+                                       for z, g in daily.groupby("zone")},
+        "fe_pct_mean_p05_p50_p95": by["fe_pct_mean"].apply(q).to_dict(),
+        "fe_pct_rms_p05_p50_p95": by["fe_pct_rms"].apply(q).to_dict(),
+        "by_rtcb_regime": {f"{z}|{r}": v for (z, r), v in
+                           d.groupby(["zone", post])[["fe_pct_mean", "fe_pct_rms"]].mean().round(3).to_dict("index").items()},
+        "corr_with_factors": {z: g[["fe_pct_mean", "fe_pct_rms", "temp_mean", "load_peak_norm"]].corr()
+                              .loc[["fe_pct_mean", "fe_pct_rms"], ["temp_mean", "load_peak_norm"]].round(3).to_dict("index")
+                              for z, g in by},
+    }
 
 
 def make_features(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
@@ -743,6 +834,12 @@ def run_features() -> pd.DataFrame:
           f"-> {out / 'imhr_outside_range.csv'}")
     print(f"Load references (99.5th pct, MW): {refs['load_reference_mw']}, system {refs['sys_load_reference_mw']}")
     print(f"System temperature weights: {refs['sys_temp_weights']}")
+    fe = findings["load_forecast_error"]
+    if fe["available"]:
+        print(f"Load forecast error: model days {fe['model_days']}; "
+              f"daily mean % (5/50/95th pct) {fe['fe_pct_mean_p05_p50_p95']}")
+    else:
+        print("Load forecast error: no forecast loaded (optional models will be skipped)")
     return daily
 
 

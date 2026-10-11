@@ -227,3 +227,38 @@ def test_gas_full_pull_starts_before_study_window():
     gas = plan_pulls("full", ["gas"])[0]["query"]
     assert gas["start"] == "2025-09-24" and gas["end"] == "2026-10-01"
     assert plan_pulls("test", ["gas"])[0]["query"]["start"] == ingest.CONFIG["test_week"]["start"]
+
+
+# --- optional dataset: load forecast (Build Plan 6.7, D8) -------------------
+
+def test_optional_dataset_planned_only_when_named():
+    assert "load_fcst" not in {p["key"] for p in plan_pulls("full")}
+    assert "load_fcst" not in {p["key"] for p in plan_pulls("test")}
+    (p,) = plan_pulls("full", ["load_fcst"])
+    assert p["query"]["publish_time"] == "latest_before:-1 day@10:00:00" and p["expected_rows"] == 8_760
+
+
+def test_forecast_deadline_is_10am_central_the_day_before_across_dst():
+    hours = pd.Series(pd.to_datetime(["2025-11-02 06:00", "2025-11-02 07:00", "2026-03-09 04:00"], utc=True))
+    local = ingest.forecast_deadline(hours).dt.tz_convert("US/Central")
+    assert list(local.dt.strftime("%Y-%m-%d %H:%M")) == ["2025-11-01 10:00", "2025-11-01 10:00", "2026-03-07 10:00"]
+
+
+def test_forecast_vintage_check_flags_late_and_duplicate_rows():
+    start = pd.date_range("2025-11-03 06:00", periods=3, freq="h", tz="UTC")
+    on_time = pd.Timestamp("2025-11-02 15:30", tz="UTC")             # 9:30 a.m. CST the day before
+    df = pd.DataFrame({"interval_start_utc": start.append(start[[0]]),
+                       "publish_time_utc": [on_time, on_time, on_time + pd.Timedelta("35min"), on_time]})
+    info = ingest_checks.forecast_vintage_check(df)
+    assert info["rows_after_deadline"] == 1 and info["duplicate_hours"] == 1
+
+
+def test_run_checks_keeps_records_of_other_files(tmp_path):
+    (tmp_path / "_checks.json").write_text(json.dumps(
+        {"checked_at_utc": "earlier", "gate_failures": [], "files": {"da": {"rows": 1}}}))
+    (p,) = plan_pulls("full", ["gas"])
+    pd.DataFrame({"period": ["2025-10-01"], "series": ["RNGWHHD"], "units": ["$/MMBTU"], "price": [3.0]}) \
+        .to_parquet(tmp_path / "gas.parquet")
+    ingest_checks.run_checks([p], tmp_path)
+    out = json.loads((tmp_path / "_checks.json").read_text())
+    assert set(out["files"]) == {"da", "gas"} and out["history"][0]["checked_at_utc"] == "earlier"

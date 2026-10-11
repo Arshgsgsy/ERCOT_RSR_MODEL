@@ -54,7 +54,9 @@ CONFIG = {
         "default": "2026-10-03",
         # Gas re-pulled Oct 8, 2026 from Sep 24, 2025, after EIA's weekly
         # refresh. It fills Sep 30, 2025 (lag for Oct 1) and Sep 30, 2026.
-        "per_dataset": {"gas": "2026-10-08"},
+        # Load forecast (optional phase) pulled Oct 10, 2026 with the D8 vintage rule. The folder
+        # is named 2026-10-11 (named ahead of the pull); the manifest records the real time.
+        "per_dataset": {"gas": "2026-10-08", "load_fcst": "2026-10-11"},
     },
 
     # Step 2, align() (Build Plan 6.2 and 7.3).
@@ -71,7 +73,10 @@ CONFIG = {
         # D13: gas gaps longer than this inside the series are reported. Shorter
         # gaps are weekends and holidays and are carried forward.
         "gas_max_gap_days": 4,
-        "decision": "D2, D3, D7, D9, D13",
+        # D8 (optional phase): a forecast for an operating hour must be published at or
+        # before this local time, this many days before the operating day. Checked per row.
+        "forecast_deadline": {"days_before": 1, "local_time": "10:00"},
+        "decision": "D2, D3, D7, D8, D9, D13",
     },
 
     # Step 3, make_features() (Build Plan 5.3, 5.4 and 6.3).
@@ -142,8 +147,26 @@ CONFIG = {
         "lvl_zone_onpeak": {"priority": 2, "zones": "zones", "response": "spread_onpeak_mean",
                             "transform": "asinh_mad", "factors": ["temp_mean", "load_peak_norm"],
                             "labels": ["T", "L"], "sample": "weekday"},
+        # Optional phase (Build Plan 6.7, owner decision Oct 10, 2026): the main models
+        # refitted with the load forecast error as a third factor F, zones and system.
+        # Signed daily mean (% of forecast) for level, daily RMS for volatility. "base"
+        # names the two-factor model it is compared with on the same days. The main
+        # models above are unchanged; these run last and are skipped if no forecast
+        # was loaded.
+        "lvl_zone_fe": {"priority": 3, "zones": "zones", "response": "spread_mean", "transform": "asinh_mad",
+                        "factors": ["temp_mean", "load_peak_norm", "fe_pct_mean"], "labels": ["T", "L", "F"],
+                        "sample": "all", "base": "lvl_zone"},
+        "vol_zone_fe": {"priority": 3, "zones": "zones", "response": "log_spread_sd", "transform": "none",
+                        "factors": ["temp_mean", "load_peak_norm", "fe_pct_rms"], "labels": ["T", "L", "F"],
+                        "sample": "all", "base": "vol_zone"},
+        "lvl_sys_fe": {"priority": 3, "zones": "system", "response": "spread_mean", "transform": "asinh_mad",
+                       "factors": ["sys_temp", "sys_load_peak_norm", "fe_pct_mean"], "labels": ["T", "L", "F"],
+                       "sample": "all", "base": "lvl_sys"},
+        "vol_sys_fe": {"priority": 3, "zones": "system", "response": "log_spread_sd", "transform": "none",
+                       "factors": ["sys_temp", "sys_load_peak_norm", "fe_pct_rms"], "labels": ["T", "L", "F"],
+                       "sample": "all", "base": "vol_sys"},
         "block": ["post_rtcb"],
-        "decision": "D11, D12, D22, D33",
+        "decision": "D8, D11, D12, D22, D33",
     },
 
     # Descriptive model terms chosen by the owner in notebooks/explore_terms.ipynb,
@@ -179,6 +202,32 @@ CONFIG = {
         "lvl_zone_onpeak|LZ_NORTH": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
         "lvl_zone_onpeak|LZ_SOUTH": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
         "lvl_zone_onpeak|LZ_WEST": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
+        # Optional phase, three-factor models (approved Oct 10, 2026; docs/term_selection.md Section 5).
+        # Same rule, with the tie-break reference = the zone's approved two-factor terms plus any F
+        # terms the search kept. Where F is dropped the surface is the approved two-factor surface.
+        "vol_zone_fe|LZ_HOUSTON": {"terms": ["T", "L", "L^2", "T*L"],
+                                   "why": "NCSS search drops all F terms (F loss 0.0039); F kept in 44% of block resamples"},
+        "vol_zone_fe|LZ_NORTH": {"terms": ["T", "L", "L^2", "T*L"],
+                                 "why": "NCSS search drops all F terms (F loss 0.0079; adding F ΔAIC −1.9 but ΔBIC +2.0)"},
+        "vol_zone_fe|LZ_SOUTH": {"terms": ["T", "L", "L^2", "T*L"],
+                                 "why": "tie-break: search keeps T, L, T*L; reference set 1.9 AIC better"},
+        "vol_zone_fe|LZ_WEST": {"terms": ["T", "L", "F", "T^2"],
+                                "why": "tie-break: search keeps T, F, T^2; reference (base T, L, T^2 plus F) within 1.1 AIC; "
+                                       "F kept in 98% of resamples"},
+        "vol_sys_fe|SYSTEM": {"terms": ["T", "L", "L^2", "T*L"],
+                              "why": "NCSS search drops all F terms (F loss 0.0089; adding F ΔAIC −2.4 but ΔBIC +1.5)"},
+        "lvl_zone_fe|LZ_HOUSTON": {"terms": ["T", "L", "F", "T^2", "L^2", "T*L"],
+                                   "why": "NCSS search = base terms plus F; dropping F costs ΔAIC +5.4; F kept in 96% of resamples"},
+        "lvl_zone_fe|LZ_NORTH": {"terms": ["T", "L", "F", "L^2", "T*L"],
+                                 "why": "NCSS search = base terms plus F; dropping F costs ΔAIC +15.7; F kept in 100% of resamples"},
+        "lvl_zone_fe|LZ_SOUTH": {"terms": ["T", "L", "L^2", "T*L"],
+                                 "why": "NCSS search drops all F terms (F loss 0.0012)"},
+        "lvl_zone_fe|LZ_WEST": {"terms": ["F", "F^2"],
+                                "why": "NCSS search; best by BIC, within 1.0 AIC of the best by AIC; reference set 4.0 AIC worse. "
+                                       "F^2 rests on the Fern days (without them the search keeps F only)"},
+        "lvl_sys_fe|SYSTEM": {"terms": ["T", "L", "L^2", "T*L"],
+                              "why": "owner override (Oct 10): search keeps F by a hair (loss 0.0109 vs cutoff 0.01) but the "
+                                     "F factor test is p 0.44 and F is kept in 67% of resamples; dropping F is ΔAIC +2.2, ΔBIC −1.7"},
     },
 
     # Units of the interim hourly panel (Build Plan 5.2 and 7.5).
@@ -189,6 +238,11 @@ CONFIG = {
         "rt_intrahour_sd": "$/MWh",
         "load": "MW",
         "sys_load": "MW",
+        "load_fcst": "MW",
+        "sys_load_fcst": "MW",
+        "fe": "MW",
+        "fe_pct": "% of forecast",
+        "sys_fe_pct": "% of forecast",
         "temp": "°F",
         "temp_range": "°F",
         "gas_price": "$/MMBtu",
@@ -283,6 +337,16 @@ CONFIG = {
             # flow day (Oct 1, 2025) has an earlier observation under the lag rule.
             "full_pull_start": "2025-09-24",
             "decision": "D13",
+        },
+        # Optional phase (Build Plan 6.7): pulled only by name, `ingest.py ... --only load_fcst`.
+        # Day-ahead zone load forecast, the latest vintage at or before 10 a.m. Central
+        # the day before each operating hour (D8). Same zone columns as actual load.
+        "load_fcst": {
+            "id": "ercot_load_forecast_by_forecast_zone",
+            "priority": "optional",
+            "params": {"publish_time": "latest_before:-1 day@10:00:00"},
+            "rows_per_hour": 1,
+            "decision": "D8",
         },
     },
 }

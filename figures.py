@@ -199,11 +199,13 @@ def surface_for(daily: pd.DataFrame, model: str, zone: str):
     return s, s.fit(terms), info
 
 
-def contour_grid(s, fit, info: dict, radius: float, n: int = 120) -> pd.DataFrame:
+def contour_grid(s, fit, info: dict, radius: float, n: int = 120, hold: dict | None = None) -> pd.DataFrame:
     """Fitted values on a grid over the observed factor ranges, in response units
-    and in $/MWh (smeared and unsmeared), with the inside-data mask."""
+    and in $/MWh (smeared and unsmeared), with the inside-data mask. A three-factor
+    model is drawn as a T-L slice with its third factor held at `hold`; the mask
+    then measures distance in all three factors (Build Plan 6.6)."""
     import run_models as rm
-    g = s.predict_grid(fit, n=n, block_values=rm.BLOCK_AT, radius=radius)
+    g = s.predict_grid(fit, n=n, block_values=rm.BLOCK_AT, radius=radius, hold=hold)
     resid = fit.resid.to_numpy()
     return pd.DataFrame({
         g["x_name"]: g["x"].ravel(), g["y_name"]: g["y"].ravel(), "fitted": g["z"].ravel(),
@@ -215,7 +217,7 @@ def contour_grid(s, fit, info: dict, radius: float, n: int = 120) -> pd.DataFram
 
 def contour_panel(ax, s, fit, grid: pd.DataFrame, value: str, norm, levels, title: str):
     import run_models as rm
-    xn, yn = s.factors
+    xn, yn = s.factors[:2]
     n = int(np.sqrt(len(grid)))
     X, Y = (grid[c].to_numpy().reshape(n, n) for c in (xn, yn))
     Z = np.where(grid["inside"].to_numpy(), grid[value].to_numpy(), np.nan).reshape(n, n)
@@ -225,7 +227,9 @@ def contour_panel(ax, s, fit, grid: pd.DataFrame, value: str, norm, levels, titl
     ax.scatter(s.Xreal[~fern, 0], s.Xreal[~fern, 1], s=2, c="white", edgecolors="k", linewidths=0.15, zorder=3)
     ax.scatter(s.Xreal[fern, 0], s.Xreal[fern, 1], s=14, marker="x", c="red", linewidths=0.8, zorder=4,
                label="Jan 23 – Feb 1, 2026")
-    can = s.canonical(fit, block_values=rm.BLOCK_AT)
+    # A three-factor stationary point almost never lies on the drawn slice, so it is
+    # marked only for two-factor surfaces (Build Plan 6.6).
+    can = s.canonical(fit, block_values=rm.BLOCK_AT) if s.k == 2 else {}
     if can.get("inside_data"):
         xs = can["stationary_real"]
         ax.scatter([xs.iloc[0]], [xs.iloc[1]], marker="*", s=60, c="orange", edgecolors="k", linewidths=0.4,
@@ -235,21 +239,28 @@ def contour_panel(ax, s, fit, grid: pd.DataFrame, value: str, norm, levels, titl
 
 
 def volatility_contours(daily: pd.DataFrame, out: Path, value: str = "dollars_smeared",
-                        radius: float | None = None, name: str = "contours_volatility") -> Path:
+                        radius: float | None = None, name: str = "contours_volatility",
+                        model: str = "vol_zone", limits: tuple[float, float] | None = None) -> Path:
     """Four zone volatility surfaces on one shared dollar color scale, masked to
-    where an observed day lies within `radius` (coded units, both factors)."""
+    where an observed day lies within `radius` (coded units, all factors). For the
+    three-factor `vol_zone_fe` the T-L slice is drawn with F at its median, on the
+    two-factor figure's color `limits` so the two can be compared directly."""
     import run_models as rm
     radius = CONFIG["rsr"]["inside_radius"] if radius is None else radius
-    zones = rm.zones_for("vol_zone")
-    fitted = {z: surface_for(daily, "vol_zone", z) for z in zones}
-    grids = {z: contour_grid(s, f, info, radius) for z, (s, f, info) in fitted.items()}
+    zones = rm.zones_for(model)
+    fitted = {z: surface_for(daily, model, z) for z in zones}
+    holds = {z: rm.extra_factor_hold(s, model) if "base" in rm.MODELS[model] else None
+             for z, (s, _, _) in fitted.items()}
+    grids = {z: contour_grid(s, f, info, radius, hold=holds[z]) for z, (s, f, info) in fitted.items()}
     inside = pd.concat([g.loc[g["inside"], value] for g in grids.values()])
-    norm = matplotlib.colors.LogNorm(vmin=inside.min(), vmax=inside.max())
-    levels = np.geomspace(inside.min(), inside.max(), 15)
+    lo, hi = limits or (inside.min(), inside.max())
+    norm = matplotlib.colors.LogNorm(vmin=lo, vmax=hi)
+    levels = np.geomspace(lo, hi, 15)
     fig, axes = plt.subplots(2, 2, figsize=(TEXT_WIDTH_IN, 5.4), constrained_layout=True)
     for ax, z in zip(axes.ravel(), zones):
         s, f, _ = fitted[z]
-        cf = contour_panel(ax, s, f, grids[z], value, norm, levels, f"{ZONE_LABELS[z]}: {', '.join(f.names)}")
+        held = "" if holds[z] is None else ", " + ", ".join(f"F = {v:.2f}%" for v in holds[z].values())
+        cf = contour_panel(ax, s, f, grids[z], value, norm, levels, f"{ZONE_LABELS[z]}: {', '.join(f.names)}{held}")
         ax.set(xlabel="daily mean temperature (°F)", ylabel="peak load / 99.5th pct load")
     axes[0, 0].legend(frameon=False, loc="upper left", fontsize=6)
     what = "smeared back-transform, approximate" if value == "dollars_smeared" else "unsmeared: median SD"
@@ -257,8 +268,13 @@ def volatility_contours(daily: pd.DataFrame, out: Path, value: str = "dollars_sm
     cb.set_label(f"daily spread SD ($/MWh, {what})")
     cb.set_ticks([t for t in (5, 10, 20, 50, 100, 200, 500, 1000) if levels[0] <= t <= levels[-1]])
     cb.set_ticklabels([f"{t:g}" for t in cb.get_ticks()])
-    fig.suptitle(f"Volatility surfaces, post-RTC+B regime, masked at radius {radius:g} (coded, both factors)",
-                 fontsize=8.5)
+    if model == "vol_zone":
+        title = f"Volatility surfaces, post-RTC+B regime, masked at radius {radius:g} (coded, both factors)"
+    else:
+        title = (f"Three-factor volatility surfaces ({model}): T-L slice, forecast-error RMS F at its median\n"
+                 f"Post-RTC+B regime, masked at radius {radius:g} (coded, all three factors)\n"
+                 f"Fern days had large F, so the slice does not reach most of them")
+    fig.suptitle(title, fontsize=8.5)
     pd.concat([g.assign(zone=z) for z, g in grids.items()]).to_csv(out / f"{name}.csv", index=False,
                                                                      float_format="%.6g")
     return save(fig, out, name)
@@ -340,6 +356,13 @@ def write_figures(out: Path) -> list[Path]:
     paths.append(system_contour(daily, fig_dir, (shown.min(), shown.max())))
     paths.append(volatility_contours(daily, fig_dir, value="dollars_unsmeared", name="contours_volatility_unsmeared"))
     paths.append(radius_sensitivity(daily, fig_dir))
+    # Optional phase: the three-factor volatility surfaces, on the two-factor color scale.
+    import run_models as rm
+    try:
+        paths.append(volatility_contours(daily, fig_dir, name="contours_volatility_fe", model="vol_zone_fe",
+                                         limits=(shown.min(), shown.max())))
+    except rm.ModelUnavailable as e:
+        print(f"skipped contours_volatility_fe: {e}")
     for p in paths:
         print(f"Wrote {p}")
     return paths

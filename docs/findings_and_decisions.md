@@ -5,11 +5,14 @@ the pipeline and the decisions made along the way that are **not** in the plan
 document. Sessions: **October 3, 2026** (setup, ingest, align, features),
 **October 8, 2026** (gas re-pull, RSR engine, term-selection notebook) and
 **October 9, 2026** (term selection, HAC size problem and block bootstrap,
-descriptive tables, runner, figures).
+descriptive tables, runner, figures) and **October 10, 2026** (optional phase:
+load forecast error as a third factor; season add-on reviewed and deferred;
+out-of-sample check of every surface).
 
 - Study window: October 1, 2025 to September 30, 2026 (D4, unchanged).
 - Raw snapshots in use: `data/raw/full/2026-10-03/` for DA, RT, load and
-  temperature; `data/raw/full/2026-10-08/` for gas.
+  temperature; `data/raw/full/2026-10-08/` for gas; `data/raw/full/2026-10-11/`
+  for the load forecast (optional phase; pulled on Oct 10, see Section 2.15).
 - All times are Central (CST = UTC−6, CDT = UTC−5) unless marked UTC.
 
 ---
@@ -76,7 +79,10 @@ needed. All four are weekdays, so the on-peak sample drops from 261 to 257.
 | One-week test pull | 6 | 4,299 |
 | Full-year pull | 8 | 192,950 |
 | Gas re-pull, Sep 24, 2025 – Sep 30, 2026 (Oct 8) | 1 | 252 |
-| **Total (period Oct 1 – Nov 1, 2026)** | **16** | **197,521 (40%)** |
+| Load forecast, trial week Oct 29 – Nov 4, 2025 (Oct 10) | 1 | 169 |
+| Load forecast, full year (Oct 10) | 1 | 8,760 |
+| Dataset metadata check, load forecast (Oct 10) | 0 | 0 |
+| **Total (period Oct 1 – Nov 1, 2026)** | **18** | **206,450 (41%)** |
 
 Every hourly row count matched the estimate exactly. The four RT quarters were
 16 rows short in total (4 missing intervals × 4 zones). Gas returned 246 rows
@@ -447,6 +453,187 @@ From `tables.py` (complete days; figures written to the run folder):
   largest value shown grows with the radius in Houston, North and South (it
   lies at the extrapolated cold edge); West's does not change.
 
+### 2.15 Load forecast error as a third factor (Oct 10, optional phase)
+
+Build Plan 6.7, "three-factor zone models", extended to the system models at
+the owner's request. Run `outputs/2026-10-10T2246Z/` (the two-factor outputs in
+it are identical to `2026-10-10T0019Z`, see below).
+
+**Data.** `ercot_load_forecast_by_forecast_zone` (ERCOT NP3-560), pulled with
+`publish_time = "latest_before:-1 day@10:00:00"`. The account reaches it on the
+free plan; it is wide like actual load (`north`, `south`, `west`, `houston`,
+`system_total` = the sum of the four). Result: **one row per operating hour, all
+8,760 hours, every one from the 9:30 a.m. Central report the day before** (365
+distinct publish times, all 0.5 h before the D8 deadline). Checked at ingest and
+again in `align()`, row by row. The trial week covers the 25-hour Nov 2.
+
+**F.** Hourly error = 100 × (actual − forecast) / forecast. Daily: signed mean
+(`fe_pct_mean`, level models) and RMS (`fe_pct_rms`, volatility models), only on
+days where every hour has a forecast. Every model day has one, so **the
+three-factor models use exactly the 361 days of the two-factor models**.
+- Daily mean error, 5th–95th percentile: about −6% to +5% by zone (system −3.5%
+  to +2.3%). Median RMS 2.9–3.2% (system 2.0%).
+- **No step at RTC+B worth a control.** The mean error moves by at most 1.6
+  points across Dec 5 (Houston −1.6% → 0.0%); RMS is slightly lower after.
+- **F is mostly new information**: the T–L quadratic plus block explains 5–22%
+  of it, except **West (54–64%)**, where the misses pile up on the Fern days
+  (RMS 13.2% against 3.5% on other days; Jan 26 30.4%).
+- Largest RMS days: Fern in North, West and SYSTEM (Jan 26); Jan 24 in South
+  (26.4%); May–June days in Houston (about 12%).
+
+**Results** (full quadratics, block bootstrap B = 999, same days as the base):
+
+| Model | R² base → with F | F factor p | T / L factor p with F | Surface corr. / SD ratio vs base (F at median) |
+|---|---|---|---|---|
+| vol Houston | 0.247 → 0.259 | 0.098 | 0.001 / 0.001 | 1.00 / 0.97 |
+| vol North | 0.272 → 0.279 | 0.43 | 0.002 / 0.049 | 1.00 / 0.94 |
+| vol South | 0.206 → 0.210 | 0.21 | 0.002 / 0.054 | 1.00 / 0.95 |
+| vol West | 0.248 → 0.299 | **0.036** | 0.17 / 0.27 | 0.97 / 0.69 |
+| vol SYSTEM | 0.258 → 0.267 | 0.16 | 0.001 / 0.039 | 1.00 / 0.95 |
+| lvl Houston | 0.091 → 0.119 | **0.005** | 0.048 / 0.015 | 0.99 / 0.98 |
+| lvl North | 0.049 → 0.096 | **0.018** | 0.47 / 0.064 | 0.98 / 0.83 |
+| lvl South | 0.069 → 0.079 | 0.81 | 0.066 / 0.11 | 1.00 / 1.00 |
+| lvl West | 0.066 → 0.179 | **0.001** | 0.27 / 0.80 | −0.60 / 0.51 |
+| lvl SYSTEM | 0.062 → 0.077 | 0.44 | 0.51 / 0.47 | 0.99 / 0.87 |
+
+- **Volatility: the temperature–load result holds.** F adds 0.004–0.012 R²
+  outside West and is not significant; T stays significant everywhere but West,
+  L everywhere but South (0.054) and West; the T–L surface at a typical F is the
+  two-factor surface (corr. 1.00, 3–6% flatter).
+- **West is the exception in both responses.** F takes over (volatility ΔR²
+  +0.05, level +0.11; the NCSS search keeps T, F, T² and F, F²). In West F
+  overlaps with T and L (condition number 51, VIF up to 58), so T and L lose
+  significance there, which is lost power, not evidence against them. The level
+  slice at median F has a different shape (corr. −0.60).
+- **Level: F is the clearest new finding.** Houston and North gain 0.03–0.05 R²
+  (p 0.005, 0.018). **This survives without Fern** (ad hoc check, B = 299:
+  R² without Fern 0.025 → 0.068 Houston, 0.007 → 0.061 North, F p 0.007 both;
+  West level 0.063, West volatility 0.020). The linear F coefficient is negative:
+  on days when load comes in above the day-ahead forecast, RT clears above DA.
+  This is an association; realized load is not exogenous to RT prices.
+- Fern still carries about half or more of the explained variation (Fern share
+  0.47–0.80).
+- Lack of fit passes everywhere (bootstrap p 0.064–0.75). Shapes: saddles, and
+  ridges for Houston, North and SYSTEM level.
+- **Figure** `contours_volatility_fe.png`: the T–L slice at each zone's median F,
+  on the two-factor figure's color scale, masked in all three factors. The cold
+  Fern corner is mostly masked out: those days had large F, so they are far from
+  the median-F slice. Stationary points are not marked (a three-factor
+  stationary point is not on the slice, plan 6.6).
+
+**The two-factor results are untouched.** `2026-10-10T2246Z` against
+`2026-10-10T0019Z`: every two-factor row of every model table is identical
+(results, coefficients, conditional tests, sequential SS, marginal effects,
+diagnostics, selection history, smearing, bootstrap sensitivity); every figure
+and its CSV are byte-identical; all 362 earlier facts keep their values (657
+facts now); `report_tables.md` differs only by the inserted optional section.
+The rebuilt `hourly_panel`, `hourly_features` and `daily.parquet` have every
+earlier column identical and only add columns. The pre-change interim and
+processed files are kept in `data/archive/two_factor_2026-10-10/`.
+
+**Is F worth it?** R² rises in all 10 models, but it must: the F model nests
+the two-factor model. On adjusted R², the F test, the no-Fern refit, the
+out-of-sample fit (Section 2.17) and the size of the effect, F earns its place
+in **Houston and North level** and **West volatility**:
+- Houston level: adjusted R² 0.076 → 0.094, p 0.005, no-Fern R² 0.025 → 0.068.
+  Out of sample (week folds, ordinary days) −0.041 → −0.031. The fitted spread
+  goes from −$0.7 to −$4.0/MWh between F at its 10th and 90th percentiles.
+- North level: adjusted R² 0.033 → 0.070, p 0.018, no-Fern R² 0.007 → 0.061.
+  Out of sample −0.063 → −0.020. Spread +$1.4 → −$6.0/MWh.
+- West volatility: adjusted R² 0.235 → 0.279, p 0.036, no-Fern R² 0.066 →
+  0.144. Out of sample 0.006 → 0.055. Daily SD $10.2 → $15.5/MWh.
+- **West level is the partial case.** It has the largest gain (adjusted R²
+  0.051 → 0.155, p 0.001) and is the only level surface above 0 out of sample
+  on ordinary days. But its F² curvature rests on Fern: predicting a held-out
+  January makes it much worse (month folds, all days, chosen F, F²: −0.17 →
+  −0.54). Its sign is also the opposite of Houston and North.
+- The other five gain nothing: adjusted R² flat or lower, F not significant,
+  and out of sample equal or worse.
+
+**Terms** (owner, Oct 10): see `docs/term_selection.md` Section 5. F stays in
+the descriptive surface for Houston and North level, West level (F, F² only)
+and West volatility. The other six use the approved two-factor surfaces.
+System level drops F by owner override. Run `outputs/2026-10-10T2316Z/` uses
+these terms. Its two-factor outputs were checked again against
+`2026-10-10T0019Z` and are unchanged.
+
+### 2.16 Season add-on: reviewed, deferred (Oct 10)
+
+A proposal to add winter/spring/summer dummies to the block of all 10 main
+models was reviewed by a research agent (indicative fits with the engine,
+B = 299; scripts outside the repository). Verdict: workable as a sensitivity,
+but the proposed reading was too strong. Season explains 61–63% of temperature
+(checked); with seasons in the block the RTC+B coefficient rests almost only on
+Sep 2026 against Oct–Nov 2025 (pre days: 61 fall, 4 winter); pairs-bootstrap
+rank failures rise from 14 to 50 of 999; an intercept shift cannot show that the
+shape is not seasonal, and fading T or L would mostly be lost power. Indicative
+result: volatility R² +0.03–0.07 (summer calmer at given T and L), T holds, L
+loses significance in North, South and SYSTEM; level unchanged. **Owner
+decision: not implemented for now.** If revisited: a ladder (Fourier K = 1–2,
+season dummies, month dummies), surface match by correlation and SD ratio, and
+block values at the sample's season mix.
+
+### 2.17 Out-of-sample check: the surfaces explain, they do not predict (Oct 10)
+
+`notebooks/out_of_sample_check.py` → `outputs/out_of_sample/oos_r2.csv`. For
+every model, each fold is left out in turn, the model is refitted by OLS on the
+rest, and the left-out days are predicted. Folds are one day (PRESS), one week
+(7 consecutive days) or one calendar month. Out-of-sample R² = 1 − SSE / sum
+of squares about the scored days' mean; below 0 means worse than their
+average. Each fold is scored on all days and on the days outside the Fern
+window (Fern stays in training). Four term sets per model: full quadratic,
+chosen terms, linear T, L, and the block alone (intercept + post_rtcb) as a
+floor.
+
+**Two-factor main models, week folds** (chosen terms; full quadratic in brackets):
+
+| | In-sample R² | Out of sample, all days | Out of sample, non-Fern days | Block only, all / non-Fern | Linear T, L, all days |
+|---|---|---|---|---|---|
+| vol Houston | 0.247 | 0.183 (0.194) | −0.009 (−0.007) | −0.020 / −0.021 | 0.042 |
+| vol North | 0.272 | 0.202 (0.178) | 0.015 (0.020) | −0.022 / −0.027 | 0.118 |
+| vol South | 0.206 | 0.140 (0.115) | 0.006 (−0.003) | −0.002 / 0.007 | 0.103 |
+| vol West | 0.248 | 0.198 (0.180) | 0.003 (0.006) | −0.009 / −0.002 | 0.016 |
+| vol SYSTEM | 0.258 | 0.203 (0.175) | 0.012 (0.004) | −0.017 / −0.016 | 0.120 |
+| lvl Houston | 0.091 | −0.201 (−0.201) | −0.041 (−0.041) | −0.021 / −0.021 | −0.034 |
+| lvl North | 0.049 | −0.412 (−0.474) | −0.056 (−0.063) | −0.017 / −0.016 | −0.129 |
+| lvl South | 0.069 | −0.238 (−0.474) | −0.057 (−0.067) | −0.023 / −0.024 | −0.077 |
+| lvl West | 0.066 | −0.291 (−0.574) | −0.068 (−0.074) | −0.012 / −0.009 | −0.064 |
+| lvl SYSTEM | 0.062 | −0.306 (−0.536) | −0.053 (−0.063) | −0.018 / −0.017 | −0.115 |
+
+Day folds are higher, about 0.18–0.24 for volatility and about 0 for level.
+Neighbouring days stay in training, so that version is optimistic. Month folds
+are lower, about 0.11–0.18 for volatility and −0.17 to −0.68 for level. The
+on-peak level models are negative in every version.
+
+- **Volatility generalizes, through the stress days.** Every volatility surface
+  predicts left-out weeks better than the block alone (0.14–0.20 against about
+  −0.02). The quadratic beats the linear surface by 0.04–0.18, so the curvature
+  is real and not overfitted. On ordinary days the out-of-sample R² is about 0
+  (−0.01 to 0.02). What the surface gets right out of sample is which days are
+  extreme (cold, high load). It adds little about day-to-day variation in
+  ordinary weather. This matches the Fern share of the explained SS
+  (0.74–0.79).
+- **Level does not generalize.** Every level surface is below 0 out of sample
+  and worse than the block alone. Each added term makes it worse (block >
+  linear > chosen > full). The in-sample R² of 0.05–0.09 is fitting a few
+  influential days. Predicting them from the other weeks fails, and on ordinary
+  days there is nothing left to fit. This is consistent with the bootstrap tests
+  (Section 2.11), with the Fern diagnostic (Section 2.10) and with the spread
+  being a market forecast error: a level predictable from same-day weather
+  would invite virtual bidding.
+- **The checks agree; they test different things.** Lack of fit asks whether
+  the quadratic shape is adequate. The bootstrap tests ask whether a factor's
+  effect is distinguishable from zero, given the dependence between days. The
+  out-of-sample R² asks whether the fitted surface, with its estimation error,
+  predicts unseen periods. A small but real effect can pass the first two and
+  still score about 0 out of sample, when about 6 estimated coefficients cost
+  more than the signal is worth (roughly k/n ≈ 0.02 of R²). Volatility on
+  ordinary days is that case: no-Fern in-sample R² 0.06–0.09, out of sample
+  about 0.
+- **F** (Section 2.15) improves the ordinary-day out-of-sample fit only for
+  Houston, North and West level and West volatility, and none of the level
+  models gets clearly above 0.
+
 ---
 
 ## 3. Decisions made in this session (not in the plan)
@@ -585,6 +772,26 @@ From `tables.py` (complete days; figures written to the run folder):
 | README | Rewritten: summary, setup, how to run, layout, inference, future-work list (from plan 6.7), limitations |
 | **First real run** | `outputs/2026-10-10T0019Z/` (Oct 10, 00:19 UTC): full rebuild from the raw snapshot, every gate passed, 32 files, about 50 s. Made before the latest code was committed, so `run.json` lists the uncommitted files; rerun after committing for a clean record |
 
+### Optional phase: load forecast error — Oct 10, 2026
+| Decision | Detail |
+|---|---|
+| **Scope** (owner) | The third factor only; zones **and** SYSTEM (the plan names zones only). On-peak models get no F. Season add-on deferred |
+| **Structure** (owner chose the simpler of two proposals) | The four models are ordinary entries in `CONFIG["models"]` (`lvl_zone_fe`, `vol_zone_fe`, `lvl_sys_fe`, `vol_sys_fe`, priority 3, with a `base` key), in the same runner and tables, run last. No separate module, flag or output folder. Rejected: an `optional.py` "variant" framework with its own config section and output folder |
+| **Two-factor results kept whole** (owner) | The main model entries, terms, figures and facts are unchanged and still produced by every run, so the report can use either model without reverting the code. Checked file by file (Section 2.15) |
+| Optional input is soft | `ingest.py --only load_fcst` pulls it (a plain `test`/`full` run still pulls only the required five; the unused `--optional` flag was removed). `build.py` reads it if the snapshot has it, otherwise leaves its columns empty; the runner then skips the F models by name (`ModelUnavailable`) and the F figure is skipped |
+| D8 checked twice | `ingest_checks.forecast_vintage_check` (gate at ingest) and `build.prep_load_fcst` / `exit_checks` (gate at build): one row per hour, publish time ≤ 10:00 Central the day before (`ingest.forecast_deadline`, DST-safe; `CONFIG["align"]["forecast_deadline"]`) |
+| System forecast | Sum of the four zone forecasts, matching `sys_load` (equals `system_total`) |
+| F definitions | Plan 6.7: signed daily mean % for level, daily RMS % for volatility; a day needs every hour's forecast |
+| Base comparison | `run_models.base_comparison`: the two-factor base refitted on the same days; R² and adjusted R² gain, the F factor bootstrap p, and the T–L surface with F at its sample median against the base surface over observed days (correlation **and** SD ratio, as the season review recommended). Columns in `results_table.csv`, empty for the main models |
+| F held at its median | For the comparison and the figure. RMS is never 0, so "F = 0" is outside the data |
+| Marginal effects of F | $/MWh per percentage point (`run_models.dollar_units`) |
+| Figure on the two-factor color scale | So the two maps can be compared directly |
+| Terms for the F models (owner, Oct 10) | The Oct 9 rule, with the tie-break reference = the zone's approved two-factor terms plus the F terms the search kept. **System level: F dropped by owner override** (the search kept it by a hair, 0.0109 against 0.01; F test p 0.44). `docs/term_selection.md` Section 5 |
+| Out-of-sample check (Oct 10) | A diagnostic in `notebooks/` (like the HAC size checks), not a runner step: `notebooks/out_of_sample_check.py` → `outputs/out_of_sample/oos_r2.csv`. Week folds are the headline. Day folds are optimistic (neighbouring days stay in) and month folds also remove a season. No forecasting claim follows from it (D30) |
+| `_checks.json` merged, not overwritten | Checking one dataset into a folder that already has checks (the trial folder) would have replaced the earlier record. `run_checks` now merges files and keeps a `history` |
+| Snapshot name | The folder is `2026-10-11` but the pull ran on **Oct 10, 2026, 22:38 UTC** (named ahead of the pull; the convention is the pull date). Kept, because renaming would mean editing a raw manifest; the manifest records the real time |
+| Archive | `data/archive/two_factor_2026-10-10/`: the interim and processed files and the trial `_checks.json` as they were before this change (git-ignored, like all data) |
+
 ---
 
 ## 4. Open items
@@ -625,6 +832,16 @@ run.
 - Optional phase (forecast error, net load, West basis): needs new pulls; the
   owner's call.
 - The report itself.
+- **F models**: decide whether the report uses them, and where. The suggestion
+  is one paragraph and one row group: F adds to level in Houston and North and
+  to both responses in West, and leaves the volatility surface unchanged
+  elsewhere (Section 2.15).
+- **Out-of-sample result in the report** (Section 2.17): suggested as one
+  column (week folds, all days and non-Fern days) or two sentences in
+  Limitations.
+- Superseded run folders `outputs/2026-10-10T2242Z/` and `T2246Z/` (before the
+  F terms were approved) can be deleted. `T2316Z` is current.
+- Commit, then rerun `python run_all.py` for a clean `run.json`.
 
 ---
 
@@ -658,6 +875,16 @@ run.
   statsmodels 0..n−1 index with the date index and returned all NaN. Fixed by
   passing `np.asarray(...)`. Only fits with a date column were affected; the
   Odor check (no dates) had passed.
+- **Oct 10: 119 tests** (+12): optional pull planned only by name, the D8
+  deadline across both DST days, the vintage check flags late and duplicate
+  rows, `_checks.json` merge; build without a forecast (empty columns), a 10:05
+  a.m. forecast stops the build, hourly and daily F values, one missing forecast
+  hour empties only that day's F; runner skips F models without a forecast,
+  units by label, the base comparison uses the same days, a full three-factor
+  `run_one`.
+- **pandas timezone slip** (Oct 10): building a frame from `Series.values` drops
+  the UTC timezone, so a merge on `hour_utc` failed (tz-aware against naive).
+  Use `reset_index(drop=True)` instead.
 - Six feature values were also checked by hand against the hourly panel: the
   Nov 2 West mean and SD over 25 hours, the system spread at the Jul 22 peak
   hour, the West DA basis, the Jul 22 North on-peak mean, the degree-day

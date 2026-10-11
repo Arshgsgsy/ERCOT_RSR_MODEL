@@ -27,6 +27,11 @@ Tables written
 - selection_history.csv    the NCSS search path for every model
 - smearing_check.csv       residual spread by factor quintile and block, and the
                            dollar value with local against pooled smearing
+
+Optional phase (Build Plan 6.7): models with a "base" in CONFIG["models"] (the
+three-factor forecast-error models) run last, in the same tables. Their results
+rows also compare them with the two-factor base model on the same days. A model
+whose factor is not in daily.parquet (no forecast loaded) is skipped by name.
 """
 
 from __future__ import annotations
@@ -50,6 +55,10 @@ SYSTEM = "SYSTEM"
 
 class ModelError(RuntimeError):
     """A model sample or transform cannot be built."""
+
+
+class ModelUnavailable(ModelError):
+    """An optional model's input was not loaded; the runner skips it."""
 
 
 def load_daily() -> pd.DataFrame:
@@ -78,6 +87,9 @@ def prepare_model_data(daily: pd.DataFrame, model: str, zone: str) -> tuple[pd.D
         raise ModelError(f"{model} runs on {zones_for(model)}, not {zone}")
 
     d = daily[daily["zone"] == zone]
+    empty = [f for f in spec["factors"] if f not in d.columns or d[f].isna().all()]
+    if empty:
+        raise ModelUnavailable(f"{model} {zone}: no values for {empty} (optional input not loaded)")
     n_days = len(d)
     d = d[d["complete_day"] & d["factors_complete"]]
     if spec["sample"] == "weekday":
@@ -173,6 +185,14 @@ def effect_days(s: Surface) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def dollar_units(labels: list[str], ref_mw: float) -> dict[int, tuple[str, float]]:
+    """Unit and conversion from a slope per real factor unit, by factor label:
+    temperature per °F, normalized load per GW, forecast error per percentage point."""
+    units = {"T": ("$/MWh per °F", 1.0), "L": ("$/MWh per GW", 1000.0 / ref_mw),
+             "F": ("$/MWh per percentage point", 1.0)}
+    return {i: units[lab] for i, lab in enumerate(labels)}
+
+
 def design_row(s: Surface, fit, real: np.ndarray) -> np.ndarray:
     Bv = np.array([[BLOCK_AT[b] for b in s.block]]) if s.block else None
     X = s.design(fit.terms, Z=s.coding.code(np.atleast_2d(real)), B=Bv)
@@ -187,7 +207,7 @@ def marginal_effects_dollars(s: Surface, fit, draws: pd.DataFrame, info: dict, r
     level = INF["level"]
     beta, D = fit.params.to_numpy(), draws[fit.params.index].to_numpy()
     resid = fit.resid.to_numpy()
-    per_unit = {0: ("$/MWh per °F", 1.0), 1: ("$/MWh per GW", 1000.0 / ref_mw)}
+    per_unit = dollar_units(s.labels, ref_mw)
     rows = []
     for _, day in effect_days(s).iterrows():
         x = day[s.factors].to_numpy(float)
@@ -250,6 +270,38 @@ def fern_diagnostic(daily: pd.DataFrame, model: str, zone: str, s: Surface, full
             "fern_share_of_explained_ss": fern_ss / (full.tss - full.rss)}
 
 
+def extra_factor_hold(s: Surface, model: str) -> dict:
+    """Factors a model adds to its base, held at their sample median when the
+    surface is compared with the base or drawn over T and L (Build Plan 6.6)."""
+    base = MODELS[MODELS[model]["base"]]["factors"]
+    return {f: float(np.median(s.Xreal[:, i])) for i, f in enumerate(s.factors) if f not in base}
+
+
+def base_comparison(daily: pd.DataFrame, model: str, zone: str, s: Surface, full, ct: pd.DataFrame) -> dict:
+    """Optional phase: the model against its two-factor base, refitted on exactly the
+    same days (full quadratics both). R² gain, the added factor's bootstrap test, and
+    how the T-L surface with the added factor at its median compares with the base
+    surface over the observed days (correlation and SD ratio)."""
+    base = MODELS[model]["base"]
+    d, _ = prepare_model_data(daily, model, zone)
+    bs = Surface(d, response="y", factors=MODELS[base]["factors"], labels=MODELS[base]["labels"], block=BLOCK,
+                 date="local_date", settings=CONFIG["rsr"])
+    b_full = bs.full()
+    hold = extra_factor_hold(s, model)
+    pts = s.Xreal.copy()
+    for f, v in hold.items():
+        pts[:, s.factors.index(f)] = v
+    a = s.predict(full, pts, BLOCK_AT)
+    b = bs.predict(b_full, bs.Xreal, BLOCK_AT)
+    added = [lab for f, lab in zip(s.factors, s.labels) if f in hold]
+    return {"base_model": base, "n_base_same_days": bs.n, "r2_base_same_days": b_full.r2,
+            "r2_gain_vs_base": full.r2 - b_full.r2, "adj_r2_gain_vs_base": full.adj_r2 - b_full.adj_r2,
+            "added_factor_hold": json.dumps({f: round(v, 4) for f, v in hold.items()}),
+            "added_factor_p_boot": float(ct.loc[f"factor: {added[0]}", "p_boot"]) if len(added) == 1 else np.nan,
+            "surface_corr_vs_base": float(np.corrcoef(a, b)[0, 1]),
+            "surface_sd_ratio_vs_base": float(np.std(a) / np.std(b))}
+
+
 def run_one(daily: pd.DataFrame, model: str, zone: str, refs: dict) -> dict:
     B, L, seed = INF["bootstrap_B"], INF["block_len"], INF["seed"]
     s, info = make_surface(daily, model, zone)
@@ -300,6 +352,8 @@ def run_one(daily: pd.DataFrame, model: str, zone: str, refs: dict) -> dict:
         "smear_local_vs_pooled_max": float((smear["dollars_local_smear"] / smear["dollars_pooled_smear"]).max())
         if info["transform"] == "none" else np.nan,
     }
+    if "base" in MODELS[model]:
+        row.update(base_comparison(daily, model, zone, s, full, ct[L]))
     seq = s.sequential_ss().reset_index().assign(**key)
     cond = ct_hac[["terms", "q", "F", "p_approx", "last_ss", "r2_loss"]].rename(columns={"p_approx": "p_hac"}).join(
         ct[L][["p_boot"]]).reset_index().assign(**key)
@@ -326,7 +380,11 @@ def run(out: Path, models: list[str] | None = None) -> dict[str, pd.DataFrame]:
                                               "fits")}
     for model in order:
         for zone in zones_for(model):
-            res = run_one(daily, model, zone, refs)
+            try:
+                res = run_one(daily, model, zone, refs)
+            except ModelUnavailable as e:
+                print(f"skipped {model} {zone}: {e}", flush=True)
+                continue
             for k in parts:
                 parts[k].append(res[k])
             r = res["row"]

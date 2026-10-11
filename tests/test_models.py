@@ -1,5 +1,7 @@
 """Tests for run_models.py data preparation (model samples and response transforms)."""
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -149,3 +151,53 @@ def test_smearing_check_bins_and_pooled_value():
     y0 = np.median(f.fitted.to_numpy()[pd.qcut(s.Xreal[:, 0], 5, labels=False) == 0])
     assert row["dollars_pooled_smear"] == pytest.approx(float(to_dollars(y0, f.resid.to_numpy(), info)[0]))
     assert row["dollars_unsmeared"] == pytest.approx(np.exp(y0))
+
+
+# --- optional phase: load forecast error as a third factor -----------------------------
+
+from run_models import ModelUnavailable, base_comparison, dollar_units
+
+
+def fe_daily(n=120, seed=1):
+    d = fake_daily(n=n, seed=seed)
+    rng = np.random.default_rng(seed + 10)
+    d["fe_pct_rms"] = rng.gamma(4, 0.8, n)
+    d["fe_pct_mean"] = rng.normal(0, 2, n)
+    return d
+
+
+def test_fe_model_skipped_when_forecast_not_loaded():
+    with pytest.raises(ModelUnavailable):
+        prepare_model_data(fake_daily(), "vol_zone_fe", "LZ_NORTH")          # column absent
+    d = fe_daily()
+    d["fe_pct_rms"] = np.nan
+    with pytest.raises(ModelUnavailable):
+        prepare_model_data(d, "vol_zone_fe", "LZ_NORTH")                     # column empty
+
+
+def test_dollar_units_by_factor_label():
+    u = dollar_units(["T", "L", "F"], ref_mw=2000.0)
+    assert u[0] == ("$/MWh per °F", 1.0) and u[1] == ("$/MWh per GW", 0.5)
+    assert u[2] == ("$/MWh per percentage point", 1.0)
+
+
+def test_base_comparison_uses_the_same_days():
+    d = fe_daily()
+    s, _ = make_surface(d, "vol_zone_fe", "LZ_NORTH")
+    full = s.full()
+    ct = pd.DataFrame({"p_boot": [0.25]}, index=["factor: F"])
+    c = base_comparison(d, "vol_zone_fe", "LZ_NORTH", s, full, ct)
+    base, _ = make_surface(d, "vol_zone", "LZ_NORTH")
+    assert c["base_model"] == "vol_zone" and c["n_base_same_days"] == s.n == 120
+    assert c["r2_base_same_days"] == pytest.approx(base.full().r2)
+    assert c["r2_gain_vs_base"] >= 0                       # the two-factor quadratic is nested
+    assert c["added_factor_p_boot"] == 0.25 and -1 <= c["surface_corr_vs_base"] <= 1
+    assert json.loads(c["added_factor_hold"]) == {"fe_pct_rms": pytest.approx(np.median(d["fe_pct_rms"]), abs=1e-4)}
+
+
+def test_run_one_three_factor_model(monkeypatch):
+    monkeypatch.setitem(run_models.INF, "bootstrap_B", 29)
+    refs = {"load_reference_mw": {"LZ_NORTH": 30000.0}, "sys_load_reference_mw": 90000.0}
+    res = run_one(fe_daily(), "vol_zone_fe", "LZ_NORTH", refs)
+    assert "factor: F" in set(res["cond"]["test"]) and len(res["me"]) == 9
+    assert res["row"]["base_model"] == "vol_zone" and 0 < res["row"]["added_factor_p_boot"] <= 1

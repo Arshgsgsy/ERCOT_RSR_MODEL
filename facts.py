@@ -115,13 +115,20 @@ def add_model_facts(F: Facts, out: Path) -> None:
         F.add(f"post_rtcb_ci|{key}", f"{lab}: post-RTC+B block 95% bootstrap interval",
               f"[{m['post_rtcb_boot_low']:.3f}, {m['post_rtcb_boot_high']:.3f}]", "results_table.csv", where,
               "post_rtcb_boot_low, post_rtcb_boot_high")
+        if pd.notna(m.get("base_model")):  # optional phase: three-factor model against its base
+            for col, label, fmt in [("r2_base_same_days", f"R² of the two-factor {m['base_model']} on the same days", "{:.3f}"),
+                                    ("r2_gain_vs_base", "R² gain from the added factor", "{:.3f}"),
+                                    ("added_factor_p_boot", "added factor (all its terms) p (bootstrap)", "{:.3f}"),
+                                    ("surface_corr_vs_base", "T-L surface correlation with the base, F at median", "{:.2f}"),
+                                    ("surface_sd_ratio_vs_base", "T-L surface SD ratio to the base, F at median", "{:.2f}")]:
+                F.add(f"{col}|{key}", f"{lab}: {label}", m[col], "results_table.csv", where, col, fmt)
     c = read(out, "conditional_tests.csv")
     for _, t in c.iterrows():
         F.add(f"cond|{t['model']}|{t['zone']}|{t['test']}", f"{t['model']} {ZONE[t['zone']]}: {t['test']} p (bootstrap / HAC)",
               f"{t['p_boot']:.3f} / {t['p_hac']:.2g}", "conditional_tests.csv",
               f"model={t['model']}, zone={t['zone']}, test={t['test']}", "p_boot, p_hac")
     me = read(out, "marginal_effects.csv")
-    for _, e in me[me["model"].isin(["vol_zone", "vol_sys"])].iterrows():
+    for _, e in me[me["model"].isin(["vol_zone", "vol_sys", "vol_zone_fe", "vol_sys_fe"])].iterrows():
         F.add(f"me|{e['model']}|{e['zone']}|{e['day']}|{e['factor']}",
               f"{e['model']} {ZONE[e['zone']]}, {e['day']} day ({e['local_date'][:10]}): slope in {e['factor']} ({e['dollar_unit']})",
               f"{e['slope_dollars']:.2f} [{e['slope_dollars_low']:.2f}, {e['slope_dollars_high']:.2f}]",
@@ -166,6 +173,20 @@ def report_tables(out: Path) -> str:
                          f"{m['shape_chosen']} | {m['fitted_low_dollars']:.1f} to {m['fitted_high_dollars']:.0f} | "
                          f"{m['r2_no_fern']:.3f} | {m['shape_corr_ordinary_days']:.2f} |")
         lines.append("")
+    fe = r[r["model"].str.endswith("_fe")]
+    if len(fe):
+        lines += ["## Optional: load forecast error as a third factor (same days as the two-factor base)", "",
+                  "| Model | Zone | n | R² base | R² with F | ΔR² | F factor p (boot) | Lack of fit p (boot) | "
+                  "Surface corr. with base | SD ratio | Terms (search) |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|"]
+        for _, m in fe.iterrows():
+            lines.append(f"| {m['model']} | {ZONE[m['zone']]} | {m['n']} | {m['r2_base_same_days']:.3f} | "
+                         f"{m['r2_full']:.3f} | {m['r2_gain_vs_base']:+.3f} | {fmt_p(m['added_factor_p_boot'])} | "
+                         f"{fmt_p(m['lof_p_boot'])} | {m['surface_corr_vs_base']:.2f} | "
+                         f"{m['surface_sd_ratio_vs_base']:.2f} | {m['terms_chosen'].replace('^2', '²').replace('*', '·')} |")
+        lines += ["", "F: signed daily mean (level) or daily RMS (volatility) of the hourly load forecast error, "
+                  "% of the day-ahead forecast (10 a.m. vintage). Surface comparison over observed days with F at its "
+                  "sample median. R² and tests from the full quadratics.", ""]
     t = read(out, "representative_table.csv", index_col="zone")
     lines += ["## Representative spreads ($/MWh, daily means over complete days; spread = DA − RT)", "",
               "| Zone | All-hours mean | Median | SD | 5th–95th pct | DA > RT days | On-peak mean | Off-peak mean | Corr. with system | \\|RT basis\\| > $20 |",

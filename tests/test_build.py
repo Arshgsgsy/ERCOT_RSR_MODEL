@@ -392,3 +392,55 @@ def test_post_rtcb_flag():
     _, daily, _ = features(window)
     flags = daily[daily["zone"] == "LZ_NORTH"].set_index("local_date")["post_rtcb"]
     assert flags[pd.Timestamp("2025-12-04")] == 0 and flags[pd.Timestamp("2025-12-05")] == 1
+
+
+# ===========================================================================
+# Optional phase: load forecast (Build Plan 6.7, D8)
+# ===========================================================================
+
+def with_forecast(window=FALL, publish_offset="9h30min", scale=0.98):
+    """synth() plus a load forecast published at `publish_offset` after local
+    midnight the day before each operating day (9:30 a.m. by default)."""
+    raw = synth(*window)
+    load = raw["load"]
+    start = pd.to_datetime(load["interval_start_utc"], utc=True)
+    day = start.dt.tz_convert(TZ).dt.tz_localize(None).dt.normalize()
+    pub = (day - pd.Timedelta("1D") + pd.Timedelta(publish_offset)).dt.tz_localize(TZ).dt.tz_convert("UTC")
+    fc = load[["interval_start_utc", "interval_end_utc"]].assign(publish_time_utc=pub)
+    for z in build.ZONES.values():
+        fc[z["load_column"]] = load[z["load_column"]] * scale
+    raw["load_fcst"] = fc
+    return raw
+
+
+def test_without_forecast_columns_stay_empty():
+    hf, daily, _ = features()
+    assert hf["load_fcst"].isna().all() and hf["fe_pct"].isna().all()
+    assert not daily["fcst_complete"].any() and daily["fe_pct_rms"].isna().all()
+    _, findings, _ = feature_checks(hf, daily)
+    assert findings["load_forecast_error"] == {"available": False}
+
+
+def test_forecast_after_10am_day_before_stops():
+    with pytest.raises(BuildError, match="after the D8 deadline"):
+        align(with_forecast(publish_offset="10h05min"), *FALL)
+
+
+def test_forecast_error_hourly_and_daily():
+    hf, daily, _ = features(raw=with_forecast(scale=0.98))
+    want = 100 * (1 / 0.98 - 1)                                   # load = forecast / 0.98
+    assert hf["fe_pct"].to_numpy() == pytest.approx(np.full(len(hf), want))
+    assert hf["sys_fe_pct"].to_numpy() == pytest.approx(np.full(len(hf), want))
+    d = day(daily, "LZ_NORTH", "2025-11-02")
+    assert d["n_fcst_hours"] == 25 and d["fcst_complete"]
+    assert d["fe_pct_mean"] == pytest.approx(want) and d["fe_pct_rms"] == pytest.approx(want)
+    assert day(daily, SYSTEM, "2025-11-02")["fe_pct_mean"] == pytest.approx(want)
+
+
+def test_one_missing_forecast_hour_empties_that_days_error():
+    raw = with_forecast()
+    raw["load_fcst"] = raw["load_fcst"].drop(index=30)
+    _, daily, _ = features(raw=raw)
+    missing_day = daily[~daily["fcst_complete"]]
+    assert len(missing_day) == 5 and missing_day["fe_pct_rms"].isna().all()   # 4 zones + SYSTEM
+    assert daily["complete_day"].all()                                        # main models unaffected

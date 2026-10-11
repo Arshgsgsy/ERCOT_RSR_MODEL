@@ -1,7 +1,8 @@
 # Term selection: descriptive surfaces
 
 Status: **approved by the owner on October 9, 2026** and entered in
-`CONFIG["selected_terms"]`. Decisions 1–4 below follow a research review of the
+`CONFIG["selected_terms"]`. The three-factor (load forecast error) models of the
+optional phase were added on **October 10, 2026** (Section 5). Decisions 1–4 below follow a research review of the
 close calls (Section 3). Decision 5 (inference) was settled the same day
 (Section 4.2).
 
@@ -137,3 +138,57 @@ about 93%). With it, lack of fit passes for every volatility model (p
 No chosen surface is a clean maximum or minimum inside the data. Most are
 saddles; West volatility is a ridge. The fitted range over observed days (in
 each evidence file) is the better summary (D41).
+
+---
+
+## 5. Three-factor models with the load forecast error F (October 10, 2026)
+
+Approved by the owner on October 10, 2026, with one override (System level).
+Evidence came from scratch scripts that make the same engine calls (search,
+fits, AIC and BIC, a block-resampled search with 200 resamples of 25-day blocks,
+and a search without the Fern days). It is summarized here; the numbers in the
+"why" column are also in `CONFIG["selected_terms"]`.
+
+**Rule**: the Section 1 rule with one change. The tie-break reference is the
+zone's approved two-factor terms plus any F terms the search kept (closed
+under hierarchy), not T, L, L², T·L. So an F surface differs from its
+two-factor surface only by F terms unless the data clearly say otherwise
+(more than 2 AIC). Where the search drops every F term, the chosen surface
+**is** the approved two-factor surface, refitted on the same 361 days.
+
+| Model | Zone | Terms | How | F kept in resamples |
+|---|---|---|---|---|
+| vol_zone_fe | Houston | T, L, L², T·L | search (F loss 0.0039) | 44% |
+| vol_zone_fe | North | T, L, L², T·L | search (F loss 0.0079) | 46% |
+| vol_zone_fe | South | T, L, L², T·L | tie-break (search T, L, T·L; ΔAIC −1.9) | 31% |
+| vol_zone_fe | West | T, L, F, T² | tie-break (search T, F, T²; ΔAIC +1.1) | 98% |
+| vol_sys_fe | SYSTEM | T, L, L², T·L | search (F loss 0.0089) | 44% |
+| lvl_zone_fe | Houston | T, L, F, T², L², T·L | search (= base + F; dropping F ΔAIC +5.4) | 96% |
+| lvl_zone_fe | North | T, L, F, L², T·L | search (= base + F; dropping F ΔAIC +15.7) | 100% |
+| lvl_zone_fe | South | T, L, L², T·L | search (F loss 0.0012) | 51% |
+| lvl_zone_fe | West | F, F² | search; best by BIC, within 1.0 AIC of the best by AIC; reference 4.0 AIC worse | 100% |
+| lvl_sys_fe | SYSTEM | T, L, L², T·L | **owner override**: the search keeps F (loss 0.0109 against the 0.01 cutoff), but the F factor test is p 0.44 and F is kept in 67% of resamples; dropping F is ΔAIC +2.2, ΔBIC −1.7 | 67% |
+
+Every chosen set is hierarchical. Each is between ΔAIC +0.4 and −8.1 against
+its full quadratic, with ΔBIC −13.9 to −33.6, and its fitted values correlate
+0.93–0.99 with the full quadratic.
+
+Close calls and caveats:
+- **West level keeps F and F² only**: temperature and load drop out (their
+  factor tests with F in the model: p 0.27 and 0.80). The curvature rests on
+  the Fern days: without them the search keeps F alone. The alternative
+  T, L, F, F² was within 1.3 AIC and was not chosen.
+- **North and SYSTEM volatility**: AIC slightly prefers adding a linear F
+  (−1.9, −2.4) but the R² rule drops it, consistent with removing the AIC guard
+  on October 9. The F tests are not significant (p 0.43, 0.16).
+- **Fern**: without the Fern days, Houston level's search gives T, F, T·F and
+  North level's gives F alone. F survives in both, but the T–L part does not.
+- **Selection is unstable** under resampling, as in Section 1, so differences
+  between zones in the chosen terms are not findings.
+- **Shape labels**: every chosen three-factor set is labelled "ridge". The
+  canonical analysis reads a missing F², or a missing F interaction, as zero
+  curvature in that direction, so the label carries no information here. Use
+  the fitted range (D41).
+
+Whether F is worth having at all is judged with the tests, not the selection:
+`docs/findings_and_decisions.md`, Sections 2.15 and 2.17.
