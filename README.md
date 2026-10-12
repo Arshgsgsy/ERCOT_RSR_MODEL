@@ -50,7 +50,7 @@ python -m pip install -r requirements.txt
 
 On Windows PowerShell, activate the environment with `.venv\Scripts\Activate.ps1`.
 
-To configure downloads, copy `.env.example` to `.env` and set:
+To configure downloads, in your .env set:
 
 ```dotenv
 GRIDSTATUS_API_KEY=your_api_key
