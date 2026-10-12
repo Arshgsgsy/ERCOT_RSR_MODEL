@@ -200,7 +200,7 @@ Install development dependencies and run the offline suite:
 
 ```sh
 python -m pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest tests/ -q
 ```
 
 Tests cover NCSS reference results, daylight saving transitions, missing-data

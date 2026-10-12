@@ -42,7 +42,7 @@ def source_files() -> list[Path]:
     patterns = ("config.py", "ingest.py", "ingest_checks.py", "build.py", "rsr.py",
                 "run_models.py", "tables.py", "figures.py", "renewable_validation.py",
                 "evaluation.py", "facts.py", "run_all.py", "requirements.txt",
-                "requirements-dev.txt", "README.md", ".gitignore", ".env.example", "pytest.ini",
+                "requirements-dev.txt", "README.md", ".gitignore", ".env.example",
                 "tests/*.py", "docs/methodology.md", "reference/inference_validation.json")
     return sorted({p for pattern in patterns for p in ROOT.glob(pattern) if p.is_file()})
 

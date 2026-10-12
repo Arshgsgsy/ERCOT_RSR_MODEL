@@ -24,3 +24,6 @@ __pycache__/
 
 # Local exploration and report preparation
 /local_work/
+
+# Local pytest discovery preferences
+/pytest.ini
