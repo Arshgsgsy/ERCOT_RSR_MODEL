@@ -1,0 +1,40 @@
+{
+  "status": "Historical inference-calibration reference; not rerun by the analysis pipeline.",
+  "scope": "Original gross-load designs; not a new calibration of forecast-error or net-load models.",
+  "sources": [
+    {
+      "file": "outputs/hac_size/bootstrap_size.csv",
+      "sha256": "74d2a183ba1d15f0692118e8c401debdde9e883eab75ed074287b30ba609dbb7"
+    },
+    {
+      "file": "outputs/hac_size/size.csv",
+      "sha256": "d8e8f628540cd60ee8c1fad52c8573bdc209dfcab7576d9a4ea9e91d735b9222"
+    }
+  ],
+  "facts": [
+    {
+      "id": "hac_size_lof",
+      "statement": "HAC lack-of-fit false-rejection rate at nominal 5% (range over designs and noise)",
+      "value": "27%-39%",
+      "file": "outputs/hac_size/size.csv",
+      "row": "all rows",
+      "column": "lof_hac"
+    },
+    {
+      "id": "hac_size_t",
+      "statement": "HAC single-term false-rejection rate at nominal 5% (range)",
+      "value": "8%-40%",
+      "file": "outputs/hac_size/size.csv",
+      "row": "all rows",
+      "column": "t_*_hac"
+    },
+    {
+      "id": "boot_size_lof",
+      "statement": "bootstrap lack-of-fit false-rejection rate at nominal 5% (range, block lengths 10/25/50)",
+      "value": "2.7%-6.3%",
+      "file": "outputs/hac_size/bootstrap_size.csv",
+      "row": "all rows (reps 300)",
+      "column": "lack_of_fit|boot10, lack_of_fit|boot25, lack_of_fit|boot50"
+    }
+  ]
+}

@@ -280,22 +280,24 @@ def volatility_contours(daily: pd.DataFrame, out: Path, value: str = "dollars_sm
     return save(fig, out, name)
 
 
-def system_contour(daily: pd.DataFrame, out: Path, zone_limits: tuple[float, float]) -> Path:
+def system_contour(daily: pd.DataFrame, out: Path, zone_limits: tuple[float, float],
+                   model: str = "vol_sys", name: str = "contour_system") -> Path:
     """The system volatility surface on its own factors, with the zones' color limits."""
-    s, f, info = surface_for(daily, "vol_sys", SYSTEM)
+    s, f, info = surface_for(daily, model, SYSTEM)
     grid = contour_grid(s, f, info, CONFIG["rsr"]["inside_radius"])
     lo, hi = zone_limits
     norm, levels = matplotlib.colors.LogNorm(vmin=lo, vmax=hi), np.geomspace(lo, hi, 15)
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN * 0.6, 3.0), constrained_layout=True)
     cf = contour_panel(ax, s, f, grid, "dollars_smeared", norm, levels, f"System: {', '.join(f.names)}")
-    ax.set(xlabel="load-weighted temperature (°F)", ylabel="system peak load / 99.5th pct load")
+    label = "system peak net load / p99.5 net load" if model == "vol_sys_net" else "system peak load / 99.5th pct load"
+    ax.set(xlabel="load-weighted temperature (°F)", ylabel=label)
     ax.legend(frameon=False, loc="upper left", fontsize=6)
     cb = fig.colorbar(cf, ax=ax)
     cb.set_label("daily system spread SD ($/MWh, approximate)")
     cb.set_ticks([t for t in (5, 10, 20, 50, 100, 200, 500, 1000) if lo <= t <= hi])
     cb.set_ticklabels([f"{t:g}" for t in cb.get_ticks()])
-    grid.to_csv(out / "contour_system.csv", index=False, float_format="%.6g")
-    return save(fig, out, "contour_system")
+    grid.to_csv(out / f"{name}.csv", index=False, float_format="%.6g")
+    return save(fig, out, name)
 
 
 def radius_sensitivity(daily: pd.DataFrame, out: Path) -> Path:
@@ -354,6 +356,9 @@ def write_figures(out: Path) -> list[Path]:
     zone_grid = pd.read_csv(fig_dir / "contours_volatility.csv")
     shown = zone_grid.loc[zone_grid["inside"], "dollars_smeared"]
     paths.append(system_contour(daily, fig_dir, (shown.min(), shown.max())))
+    if daily.get("sys_net_load_peak_norm", pd.Series(dtype=float)).notna().any():
+        paths.append(system_contour(daily, fig_dir, (shown.min(), shown.max()),
+                                    model="vol_sys_net", name="contour_system_net"))
     paths.append(volatility_contours(daily, fig_dir, value="dollars_unsmeared", name="contours_volatility_unsmeared"))
     paths.append(radius_sensitivity(daily, fig_dir))
     # Optional phase: the three-factor volatility surfaces, on the two-factor color scale.

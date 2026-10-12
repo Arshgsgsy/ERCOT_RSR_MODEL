@@ -3,7 +3,7 @@
 Rebuilds every table and figure from the raw snapshot named in config.py, in
 order, and stops at the first failure:
 
-    build (align + features) -> tables -> models -> figures -> facts
+    build (align + features) -> tables -> models -> figures -> renewable validation -> evaluation -> facts
 
 Outputs go to outputs/<run_id>/. run.json is written last, only when every step
 succeeded, with the resolved settings, decision IDs, raw snapshot and checksums,
@@ -21,6 +21,7 @@ import datetime as dt
 import importlib.metadata as md
 import json
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -34,6 +35,16 @@ PACKAGES = ["gridstatusio", "pandas", "pyarrow", "numpy", "scipy", "statsmodels"
 
 class RunError(RuntimeError):
     """A pipeline step failed; run.json is not written."""
+
+
+def source_files() -> list[Path]:
+    """Explicit source allowlist: no credentials, caches, data or prior outputs."""
+    patterns = ("config.py", "ingest.py", "ingest_checks.py", "build.py", "rsr.py",
+                "run_models.py", "tables.py", "figures.py", "renewable_validation.py",
+                "evaluation.py", "facts.py", "run_all.py", "requirements.txt",
+                "requirements-dev.txt", "README.md", ".gitignore", ".env.example", "pytest.ini",
+                "tests/*.py", "docs/methodology.md", "reference/inference_validation.json")
+    return sorted({p for pattern in patterns for p in ROOT.glob(pattern) if p.is_file()})
 
 
 def git_state() -> dict:
@@ -78,8 +89,10 @@ def step(name: str, fn, timings: dict):
 def run(skip_build: bool = False, run_id: str | None = None) -> Path:
     import build
     import facts
+    import evaluation
     import figures
     import run_models
+    import renewable_validation
     import tables
 
     started = dt.datetime.now(dt.timezone.utc)
@@ -87,6 +100,8 @@ def run(skip_build: bool = False, run_id: str | None = None) -> Path:
     out = CONFIG["paths"]["outputs"] / run_id
     if out.exists():
         raise RunError(f"{out} already exists; outputs are never overwritten")
+    sources = [{"file": str(p.relative_to(ROOT)), "sha256": sha256(p)} for p in source_files()]
+    initial_settings = json.dumps(CONFIG, sort_keys=True, default=str)
     timings: dict = {}
 
     if not skip_build:
@@ -94,7 +109,21 @@ def run(skip_build: bool = False, run_id: str | None = None) -> Path:
     step("tables", lambda: tables.write_tables(out), timings)
     step("models", lambda: run_models.run(out), timings)
     step("figures", lambda: figures.write_figures(out), timings)
+    step("renewable validation", lambda: renewable_validation.write_checks(out), timings)
+    step("evaluation", lambda: evaluation.write_evaluation(out), timings)
     step("facts", lambda: facts.write_facts(out), timings)
+
+    if initial_settings != json.dumps(CONFIG, sort_keys=True, default=str):
+        raise RunError("Configuration changed during the run; no successful manifest written")
+    if [str(p.relative_to(ROOT)) for p in source_files()] != [item["file"] for item in sources]:
+        raise RunError("Source inventory changed during the run; rerun with stable sources")
+    for item in sources:
+        src = ROOT / item["file"]
+        if sha256(src) != item["sha256"]:
+            raise RunError(f"Source changed during the run: {src}; rerun with stable sources")
+        dest = out / "source_snapshot" / item["file"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
 
     interim, processed = CONFIG["paths"]["interim"], CONFIG["paths"]["processed"]
     align_report = json.loads((interim / "align_report.json").read_text())
@@ -111,6 +140,10 @@ def run(skip_build: bool = False, run_id: str | None = None) -> Path:
                              for p in (interim / "hourly_panel.parquet", processed / "hourly_features.parquet",
                                        processed / "daily.parquet", processed / "features_report.json")],
         "code": git_state(),
+        "source_files": sources,
+        "build_reports": [{"file": str(p.relative_to(ROOT)), "sha256": sha256(p)}
+                          for p in (interim / "align_report.json", interim / "coverage.csv",
+                                    interim / "rt_complete_by_month.csv", processed / "imhr_outside_range.csv")],
         "python": platform.python_version(),
         "packages": {p: md.version(p) for p in PACKAGES},
         "seeds": {"bootstrap": CONFIG["inference"]["seed"]},

@@ -369,7 +369,19 @@ COLUMNS = ["zone", "hour_utc", "local_date", "expected_hours",
            "da_price", "rt_n", "rt_complete", "rt_price", "rt_price_partial", "rt_intrahour_sd",
            "load", "sys_load", "load_fcst", "load_fcst_publish", "sys_load_fcst",
            "temp", "temp_range", "temp_n", "temp_dst_fix",
-           "gas_price", "gas_obs_date", "gas_price_same"]
+           "gas_price", "gas_obs_date", "gas_price_same", "wind_gen", "solar_gen"]
+
+
+def prep_renewable(raw: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Delivered system generation; missing hours remain missing, never filled."""
+    check_interval_length(raw, 60, name)
+    start, end, published = (utc(raw[c]) for c in ("interval_start_utc", "interval_end_utc", "publish_time_utc"))
+    values = raw["gen_system_wide"].astype(float)
+    if start.isna().any() or end.isna().any() or published.isna().any():
+        raise BuildError(f"{name}: missing timestamps")
+    if start.duplicated().any() or (published < end).any() or np.isinf(values).any():
+        raise BuildError(f"{name}: duplicate hours, premature actual publication, or infinite generation")
+    return pd.DataFrame({"hour_utc": start, f"{name}_gen": values})
 
 
 def align(raw: dict[str, pd.DataFrame], start: str | None = None, end: str | None = None) -> tuple[pd.DataFrame, dict]:
@@ -385,6 +397,12 @@ def align(raw: dict[str, pd.DataFrame], start: str | None = None, end: str | Non
     zonal_load, sys_load = prep_load(raw["load"], report)
     panel = merge_checked(panel, zonal_load, ["zone", "hour_utc"], "one_to_one", "load", report)
     panel = merge_checked(panel, sys_load, ["hour_utc"], "many_to_one", "sys_load", report)
+    for name in ("wind", "solar"):
+        key = f"{name}_actual"
+        if key in raw:
+            panel = merge_checked(panel, prep_renewable(raw[key], name), ["hour_utc"], "many_to_one", key, report)
+        else:
+            panel[f"{name}_gen"] = np.nan
     if "load_fcst" in raw:
         zonal_fc, sys_fc = prep_load_fcst(raw["load_fcst"], report)
         panel = merge_checked(panel, zonal_fc, ["zone", "hour_utc"], "one_to_one", "load_fcst", report)
@@ -456,13 +474,6 @@ def coverage_tables(panel: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return cov, rt_month
 
 
-def trace_rows(panel: pd.DataFrame) -> pd.DataFrame:
-    """Rows to hand-trace against the raw files (Build Plan 6.2 exit checks)."""
-    picks = ["2026-07-22 22:00", "2025-11-02 06:00", "2025-11-02 07:00", "2026-03-08 08:00"]
-    want = pd.to_datetime(picks).tz_localize("UTC")
-    return panel[(panel["zone"] == "LZ_NORTH") & panel["hour_utc"].isin(want)]
-
-
 def write_parquet_checked(df: pd.DataFrame, path) -> None:
     """Write to a temporary file, confirm it reads back identically, then rename."""
     tmp = path.with_name(path.name + ".tmp")
@@ -518,9 +529,6 @@ def run_align(snapshot: str | None = None) -> pd.DataFrame:
         print(f"Load forecast: {report['load_fcst']}")
     if "sys_load_minus_published_total_mw" in report:
         print(f"sys_load minus published total (MW): {report['sys_load_minus_published_total_mw']}")
-    print("\nRows to hand-trace against the raw files (LZ_NORTH):")
-    with pd.option_context("display.width", 250, "display.max_columns", 30):
-        print(trace_rows(panel).to_string(index=False))
     return panel
 
 
@@ -595,6 +603,10 @@ def hourly_features(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     hf["fe"] = hf["load"] - hf["load_fcst"]
     hf["fe_pct"] = 100 * hf["fe"] / hf["load_fcst"]
     hf["sys_fe_pct"] = 100 * (hf["sys_load"] - hf["sys_load_fcst"]) / hf["sys_load_fcst"]
+    hf["sys_net_load"] = hf["sys_load"] - hf.get("wind_gen", np.nan) - hf.get("solar_gen", np.nan)
+    net_ref = hf.drop_duplicates("hour_utc")["sys_net_load"].quantile(q)
+    if pd.notna(net_ref) and net_ref <= 0:
+        raise BuildError("System net-load p99.5 reference must be positive")
 
     base = FEAT["degree_day_base_f"]
     hf["cdd_h"] = (hf["temp"] - base).clip(lower=0)
@@ -611,6 +623,7 @@ def hourly_features(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         "load_norm_quantile": q,
         "load_reference_mw": {z: round(float(v), 3) for z, v in load_ref.items()},
         "sys_load_reference_mw": round(float(hf.drop_duplicates("hour_utc")["sys_load"].quantile(q)), 3),
+        "sys_net_load_reference_mw": float(net_ref) if pd.notna(net_ref) else None,
         "sys_temp_weights": {z: round(float(v), 6) for z, v in temp_weights.items()},
     }
     return hf.sort_values(["zone", "hour_utc"]).reset_index(drop=True), refs
@@ -686,7 +699,11 @@ def daily_table(hf: pd.DataFrame, refs: dict) -> pd.DataFrame:
         rows.append({"zone": zone, "local_date": day, **summarize_day(g, zone_cols)})
     sys_hours = hf[hf["zone"] == LOCATIONS[0]]
     for day, g in sys_hours.groupby("local_date", sort=True):
-        rows.append({"zone": SYSTEM, "local_date": day, **summarize_day(g, sys_cols)})
+        net = g["sys_net_load"]
+        complete = int(net.notna().sum()) == int(g["expected_hours"].iloc[0])
+        rows.append({"zone": SYSTEM, "local_date": day, **summarize_day(g, sys_cols),
+                     "n_net_load_hours": int(net.notna().sum()), "net_load_complete": complete,
+                     "sys_net_load_peak": float(net.max()) if complete else np.nan})
     daily = pd.DataFrame(rows)
 
     ref = daily["zone"].map({**refs["load_reference_mw"], SYSTEM: refs["sys_load_reference_mw"]})
@@ -694,6 +711,8 @@ def daily_table(hf: pd.DataFrame, refs: dict) -> pd.DataFrame:
     is_sys = daily["zone"] == SYSTEM
     daily["sys_temp"] = daily["temp_mean"].where(is_sys)
     daily["sys_load_peak_norm"] = daily["load_peak_norm"].where(is_sys)
+    net_ref = refs.get("sys_net_load_reference_mw")
+    daily["sys_net_load_peak_norm"] = daily["sys_net_load_peak"] / net_ref if net_ref else np.nan
     daily["month"] = daily["local_date"].dt.month.astype("int64")
     daily["weekday"] = daily["local_date"].dt.weekday.astype("int64")
     daily["post_rtcb"] = (daily["local_date"] >= pd.Timestamp(FEAT["rtcb_go_live"])).astype("int64")
@@ -755,6 +774,11 @@ def feature_checks(hf: pd.DataFrame, daily: pd.DataFrame) -> tuple[list[str], di
         "imhr_outside_typical_range": {"range": [lo, hi], "zone_days": len(outside)},
         "spread_by_rtcb_regime_descriptive": {f"{z}|{r}": v for (z, r), v in regime.to_dict("index").items()},
         "load_forecast_error": forecast_error_findings(daily, usable),
+        "renewables": {
+            "model_days": int((usable & daily["sys_net_load_peak_norm"].notna()).sum()),
+            "additional_exclusions": [str(x.date()) for x in daily.loc[
+                usable & (daily.zone == SYSTEM) & daily["sys_net_load_peak_norm"].isna(), "local_date"]],
+        },
     }
     return fails, findings, outside
 

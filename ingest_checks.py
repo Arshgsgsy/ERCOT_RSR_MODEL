@@ -48,11 +48,22 @@ def require_gates(stage: str, only: list[str] | None = None) -> None:
     of an optional dataset also needs that dataset's own trial file."""
     if not PATHS["access"].exists():
         raise IngestError("Run `python ingest.py access` first.")
+    access = json.loads(PATHS["access"].read_text()).get("datasets", {})
+    failed = [key for key in REQUIRED if access.get(key, {}).get("accessible") is not True
+              or access.get(key, {}).get("covers_study_start") is False]
+    if failed:
+        raise IngestError(f"Access gate failed or is missing for {failed}; rerun `python ingest.py access`.")
     if stage == "full":
         names = [*REQUIRED, *(k for k in only or [] if k in OPTIONAL)]
         for p in trial_pulls(names):
             if cache_status(PATHS["raw_test"], p["name"], p["query"]) != "reuse":
                 raise IngestError(f"Trial file {p['name']} is missing. Run `python ingest.py test` first.")
+            # Revalidate the exact cached bytes. An old summary can be missing,
+            # stale, or predate a check added since the trial was downloaded.
+            pq, _ = file_paths(PATHS["raw_test"], p["name"])
+            failures, _ = check_file(p, pd.read_parquet(pq))
+            if failures:
+                raise IngestError(f"Trial validation failed: {'; '.join(failures)}")
 
 
 def estimate(pulls: list[dict], page_size: int) -> dict:
@@ -239,6 +250,13 @@ def check_file(p: dict, df: pd.DataFrame) -> tuple[list[str], dict]:
                 fails.append(f"{p['name']}: {info['duplicate_hours']} operating hours have more than one row")
             if info["rows_after_deadline"]:
                 fails.append(f"{p['name']}: {info['rows_after_deadline']} rows published after the D8 deadline")
+    elif p["key"] in ("wind_actual", "solar_actual"):
+        from build import BuildError, prep_renewable
+        try:
+            values = prep_renewable(df, p["key"].split("_")[0])
+            info["missing_generation_rows"] = int(values.iloc[:, 1].isna().sum())
+        except (BuildError, KeyError, ValueError) as e:
+            fails.append(f"{p['name']}: {e}")
     elif p["key"] == "gas":
         info["series"] = sorted(df["series"].unique()) if "series" in df.columns else None
         info["units"] = sorted(df["units"].unique()) if "units" in df.columns else None
@@ -257,13 +275,22 @@ def run_checks(pulls: list[dict], folder: Path) -> None:
     for p in pulls:
         pq, _ = file_paths(folder, p["name"])
         if not pq.exists():
-            all_fails.append(f"{p['name']}: no file")
+            failures = [f"{p['name']}: no file"]
+            all_fails += failures
+            findings[p["name"]] = {"gate_failures": failures}
             continue
         fails, info = check_file(p, pd.read_parquet(pq))
         all_fails += fails
-        findings[p["name"]] = info
+        findings[p["name"]] = {**info, "gate_failures": fails}
     path = folder / "_checks.json"
     old = json.loads(path.read_text()) if path.exists() else {}
+    # Preserve failures for datasets not checked by this invocation, including
+    # legacy summaries where failures were only stored at the top level.
+    all_fails += [f for f in old.get("gate_failures", [])
+                  if not any(f.startswith(name + ":") for name in findings)]
+    files = {**old.get("files", {}), **findings}
+    all_fails += [f for info in files.values() for f in info.get("gate_failures", [])]
+    all_fails = list(dict.fromkeys(all_fails))
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     history = old.get("history", [])
     if old:
@@ -272,7 +299,7 @@ def run_checks(pulls: list[dict], folder: Path) -> None:
     summary = {
         "checked_at_utc": now,
         "gate_failures": all_fails,
-        "files": {**old.get("files", {}), **findings},
+        "files": files,
         "history": history,
     }
     write_json(path, summary)

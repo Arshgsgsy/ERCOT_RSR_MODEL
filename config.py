@@ -1,6 +1,6 @@
 """Every setting for the pipeline, in one plain dictionary.
 
-Values live here. Reasons live in the Build Plan, Section 9, and each setting
+Values live here. Methods are documented in docs/methodology.md; each setting
 carries the ID of its decision record. run.json records which values made
 which outputs.
 """
@@ -56,7 +56,8 @@ CONFIG = {
         # refresh. It fills Sep 30, 2025 (lag for Oct 1) and Sep 30, 2026.
         # Load forecast (optional phase) pulled Oct 10, 2026 with the D8 vintage rule. The folder
         # is named 2026-10-11 (named ahead of the pull); the manifest records the real time.
-        "per_dataset": {"gas": "2026-10-08", "load_fcst": "2026-10-11"},
+        "per_dataset": {"gas": "2026-10-08", "load_fcst": "2026-10-11",
+                        "wind_actual": "2026-10-10-renewables", "solar_actual": "2026-10-10-renewables"},
     },
 
     # Step 2, align() (Build Plan 6.2 and 7.3).
@@ -115,7 +116,7 @@ CONFIG = {
 
     # Inference for reported tests and intervals (owner decision Oct 9, 2026; departs
     # from D16/D17). On the project's designs the HAC Wald tests reject 27-39% (lack
-    # of fit) and 8-40% (single terms) at nominal 5% (notebooks/hac_size_check.py).
+    # of fit) and 8-40% (single terms) at nominal 5% (reference/inference_validation.json).
     # Tests: residual block bootstrap under the null; intervals: moving-block pairs
     # bootstrap. Block length 25 days (= the HAC lag), 10 and 50 as sensitivity.
     "inference": {
@@ -165,17 +166,31 @@ CONFIG = {
         "vol_sys_fe": {"priority": 3, "zones": "system", "response": "log_spread_sd", "transform": "none",
                        "factors": ["sys_temp", "sys_load_peak_norm", "fe_pct_rms"], "labels": ["T", "L", "F"],
                        "sample": "all", "base": "vol_sys"},
+        # D21/D34 amendment: preserve gross-load models and add separate net-load
+        # sensitivities. Replacement of L is non-nested; no added-factor test.
+        "lvl_sys_net": {"priority": 4, "zones": "system", "response": "spread_mean", "transform": "asinh_mad",
+                        "factors": ["sys_temp", "sys_net_load_peak_norm"], "labels": ["T", "L"],
+                        "sample": "all", "base": "lvl_sys", "comparison": "replacement",
+                        "load_reference": "sys_net_load_reference_mw"},
+        "vol_sys_net": {"priority": 4, "zones": "system", "response": "log_spread_sd", "transform": "none",
+                        "factors": ["sys_temp", "sys_net_load_peak_norm"], "labels": ["T", "L"],
+                        "sample": "all", "base": "vol_sys", "comparison": "replacement",
+                        "load_reference": "sys_net_load_reference_mw"},
         "block": ["post_rtcb"],
-        "decision": "D8, D11, D12, D22, D33",
+        "decision": "D8, D11, D12, D21, D22, D33, D34",
     },
 
-    # Descriptive model terms chosen by the owner in notebooks/explore_terms.ipynb,
+    # Approved descriptive terms (see docs/methodology.md),
     # one entry per model and zone. Must be hierarchical. The full quadratic is
     # always the model used for inference; these are the surfaces presented.
-    # Rule (approved Oct 9, 2026; evidence in docs/term_selection.md and outputs/term_selection/):
+    # Rule (approved Oct 9, 2026; evidence in docs/methodology.md):
     # the NCSS search (R² loss < 0.01), then the reference set T, L, L^2, T*L if it is
     # within 2 AIC of the search result. On-peak rows mirror the all-hours level choice.
     "selected_terms": {
+        "vol_sys_net|SYSTEM": {"terms": ["T", "L", "T^2", "L^2", "T*L"],
+                                "why": "Full quadratic retained for the approved matched net-load sensitivity; no additional term selection"},
+        "lvl_sys_net|SYSTEM": {"terms": ["T", "L", "T^2", "L^2", "T*L"],
+                                "why": "Full quadratic supporting comparison; weak level result retained alongside volatility"},
         "vol_zone|LZ_HOUSTON": {"terms": ["T", "L", "L^2", "T*L"],
                                 "why": "NCSS search drops T^2 (R² loss 0.0088); surface within 10% of the full quadratic"},
         "vol_zone|LZ_NORTH": {"terms": ["T", "L", "L^2", "T*L"],
@@ -202,7 +217,7 @@ CONFIG = {
         "lvl_zone_onpeak|LZ_NORTH": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
         "lvl_zone_onpeak|LZ_SOUTH": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
         "lvl_zone_onpeak|LZ_WEST": {"terms": ["T", "L", "L^2", "T*L"], "why": "mirrors lvl_zone"},
-        # Optional phase, three-factor models (approved Oct 10, 2026; docs/term_selection.md Section 5).
+        # Optional phase, three-factor models (approved Oct 10, 2026; docs/methodology.md).
         # Same rule, with the tie-break reference = the zone's approved two-factor terms plus any F
         # terms the search kept. Where F is dropped the surface is the approved two-factor surface.
         "vol_zone_fe|LZ_HOUSTON": {"terms": ["T", "L", "L^2", "T*L"],
@@ -238,6 +253,11 @@ CONFIG = {
         "rt_intrahour_sd": "$/MWh",
         "load": "MW",
         "sys_load": "MW",
+        "wind_gen": "MW",
+        "solar_gen": "MW",
+        "sys_net_load": "MW",
+        "sys_net_load_peak": "MW",
+        "sys_net_load_peak_norm": "multiple of hourly net-load 99.5th percentile",
         "load_fcst": "MW",
         "sys_load_fcst": "MW",
         "fe": "MW",
@@ -347,6 +367,18 @@ CONFIG = {
             "params": {"publish_time": "latest_before:-1 day@10:00:00"},
             "rows_per_hour": 1,
             "decision": "D8",
+        },
+        "wind_actual": {
+            "id": "ercot_wind_actual_and_forecast_hourly", "priority": "optional",
+            "params": {"columns": ["interval_start_utc", "interval_end_utc", "publish_time_utc", "gen_system_wide"],
+                       "publish_time": "latest"},
+            "rows_per_hour": 1, "decision": "D21, D34",
+        },
+        "solar_actual": {
+            "id": "ercot_solar_actual_and_forecast_hourly", "priority": "optional",
+            "params": {"columns": ["interval_start_utc", "interval_end_utc", "publish_time_utc", "gen_system_wide"],
+                       "publish_time": "latest"},
+            "rows_per_hour": 1, "decision": "D21, D34",
         },
     },
 }

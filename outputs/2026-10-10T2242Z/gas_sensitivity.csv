@@ -1,5 +1,0 @@
-zone,n_days,days_gas_differs,imhr_da_mean_lagged,imhr_da_mean_same,imhr_da_median_lagged,imhr_da_median_same,imhr_da_corr,imhr_rt_mean_lagged,imhr_rt_mean_same,imhr_rt_median_lagged,imhr_rt_median_same,imhr_rt_corr,days_outside_range_lagged,days_outside_range_same
-LZ_HOUSTON,361,223,10.1514,10.1597,9.91897,9.95637,0.987583,10.118,10.1308,9.67156,9.56425,0.988795,9,8
-LZ_NORTH,361,223,9.71989,9.73009,9.23426,9.26443,0.98752,9.90287,9.91831,8.78012,8.89306,0.991747,15,14
-LZ_SOUTH,361,223,9.85463,9.86444,9.34372,9.38842,0.98903,10.0857,10.1019,8.87394,8.77811,0.993257,16,15
-LZ_WEST,361,223,10.1622,10.1631,9.75661,9.82397,0.989917,10.217,10.2199,9.56804,9.6453,0.991248,41,44

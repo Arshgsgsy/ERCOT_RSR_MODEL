@@ -201,3 +201,27 @@ def test_run_one_three_factor_model(monkeypatch):
     res = run_one(fe_daily(), "vol_zone_fe", "LZ_NORTH", refs)
     assert "factor: F" in set(res["cond"]["test"]) and len(res["me"]) == 9
     assert res["row"]["base_model"] == "vol_zone" and 0 < res["row"]["added_factor_p_boot"] <= 1
+
+
+@pytest.mark.parametrize('model', ['vol_sys', 'vol_zone', 'lvl_zone'])
+def test_run_selected_models_has_only_available_figures(tmp_path, monkeypatch, model):
+    zone = 'SYSTEM' if model == 'vol_sys' else 'LZ_NORTH'
+    d = fake_daily(n=120, zone=zone)
+    d['sys_temp'], d['sys_load_peak_norm'] = d['temp_mean'], d['load_peak_norm']
+    monkeypatch.setattr(run_models, 'load_daily', lambda: d)
+    monkeypatch.setattr(run_models, 'zones_for', lambda m: [zone])
+    monkeypatch.setattr(run_models, 'load_references', lambda: {
+        'load_reference_mw': {zone: 30000.0}, 'sys_load_reference_mw': 90000.0})
+    monkeypatch.setitem(run_models.INF, 'bootstrap_B', 9)
+    tables = run_models.run(tmp_path, [model])
+    assert tables['results_table']['model'].tolist() == [model]
+    expected = [] if model == 'vol_sys' else [f'diagnostics_{model}.png']
+    assert sorted(p.name for p in (tmp_path / 'figures').glob('*.png')) == expected
+
+
+def test_run_only_unavailable_models_is_clear(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_models, 'load_daily', lambda: fake_daily())
+    monkeypatch.setattr(run_models, 'load_references', lambda: {})
+    with pytest.raises(ModelUnavailable, match='No requested models'):
+        run_models.run(tmp_path, ['vol_zone_fe'])
+    assert not list(tmp_path.glob('*.csv'))

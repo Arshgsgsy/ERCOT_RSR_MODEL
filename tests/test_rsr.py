@@ -78,14 +78,17 @@ def test_odor_factor_anova(odor):
         assert row["r2_loss"] == pytest.approx(r2, abs=1e-6)
 
 
-def test_odor_last_r2_matches_drop_one(odor):
+def test_odor_last_r2_matches_reference(odor):
     last_r2 = {"Temp": 0.054938, "Ratio": 0.107995, "Height": 0.170733, "Temp^2": 0.177530,
                "Ratio^2": 0.394616, "Height^2": 0.006383, "Temp*Ratio": 0.012717,
                "Temp*Height": 0.000420, "Ratio*Height": 0.000572}
-    d = odor.drop_one()
+    full = odor.full()
     for name, r2 in last_r2.items():
-        assert d.loc[name, "r2_loss"] == pytest.approx(r2, abs=1e-6)
-    assert not d.loc["Temp", "removable"] and d.loc["Temp*Height", "removable"]
+        reduced = odor.fit([t for t in full.names if t != name], allow_nonhierarchical=True)
+        assert full.r2 - reduced.r2 == pytest.approx(r2, abs=1e-6)
+    candidates = set(removable(full.terms))
+    assert parse_term("Temp", FACTORS) not in candidates
+    assert parse_term("Temp*Height", FACTORS) in candidates
 
 
 def test_odor_pure_error_lack_of_fit(odor):
@@ -245,16 +248,6 @@ def test_hac_wald_matches_hand_calculation_and_statsmodels():
 
 
 # --- tools for choosing terms ----------------------------------------------------------------
-
-def test_drop_one_and_compare_agree_with_separate_fits():
-    s = known_surface(2, noise=np.random.default_rng(5).normal(0, 1, 40))
-    full = s.full()
-    d = s.drop_one()
-    reduced = s.fit(["T", "L", "T^2", "L^2"])
-    assert d.loc["T*L", "r2_loss"] == pytest.approx(full.r2 - reduced.r2, abs=1e-12)
-    assert d.loc["T*L", "d_aic"] == pytest.approx(reduced.aic - full.aic, abs=1e-9)
-    cmp = s.compare(["T", "L", "T^2", "L^2", "T*L"], ["T", "L", "T^2", "L^2"], labels=["full", "no TL"])
-    assert cmp.loc["no TL", "r2"] == pytest.approx(reduced.r2) and cmp.loc["full", "n_terms"] == 5
 
 
 def test_sequential_ss_with_block_adds_up():

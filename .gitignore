@@ -17,3 +17,10 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Generated analysis results
+/outputs/*
+!/outputs/.gitkeep
+
+# Local exploration and report preparation
+/local_work/

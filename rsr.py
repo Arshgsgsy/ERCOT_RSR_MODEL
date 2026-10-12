@@ -6,9 +6,7 @@ electricity: it takes a table, a response, factors and optional block columns.
     s = Surface(df, response="y", factors=["temp_mean", "load_peak_norm"],
                 labels=["T", "L"], block=["post_rtcb"], date="local_date")
     full = s.full()                         # full quadratic, the model for inference
-    s.drop_one(["T", "L", "T^2", "T*L"])    # what each term costs
     s.search()                              # NCSS backward path, a guide
-    s.compare(["T", "L", "T^2", "L^2", "T*L"], ["T", "L", "T^2", "T*L"])
 
 Terms are written with the labels: "T", "T^2", "T*L", "T^2*L". Internally each
 term is a tuple of exponents, one per factor, so "T*L" is (1, 1) and "T^2" is
@@ -230,9 +228,6 @@ class FitResult:
     X: pd.DataFrame
     sm_result: object
 
-    @property
-    def mse(self) -> float:
-        return self.rss / self.df_resid
 
     def wald(self, names: list[str]) -> dict:
         """Wald test that the named coefficients are all zero, with the fit's
@@ -374,30 +369,6 @@ class Surface:
 
     # ---- choosing terms -----------------------------------------------------
 
-    def drop_one(self, terms=None) -> pd.DataFrame:
-        """For each term: can it be dropped (hierarchy), and what would dropping it cost.
-        r2_loss for every term matches NCSS's 'Last R-Squared'."""
-        terms = self.terms(terms)
-        base = self.fit(terms)
-        can = set(removable(terms))
-        rows = []
-        for t in terms:
-            reduced = self.fit([u for u in terms if u != t], allow_nonhierarchical=True)
-            name = term_name(t, self.labels)
-            children = [term_name(u, self.labels) for u in terms if is_parent(t, u)]
-            rows.append({
-                "term": name,
-                "removable": t in can,
-                "blocked_by": ", ".join(children),
-                "r2_loss": base.r2 - reduced.r2,
-                "r2_after": reduced.r2,
-                "adj_r2_after": reduced.adj_r2,
-                "d_aic": reduced.aic - base.aic,
-                "d_bic": reduced.bic - base.bic,
-                "p_approx": base.wald([name])["p"],
-            })
-        out = pd.DataFrame(rows).set_index("term")
-        return out.sort_values(["removable", "r2_loss"], ascending=[False, True])
 
     def search(self, terms=None, cutoff: float | None = None) -> dict:
         """NCSS backward elimination. Remove the removable term with the smallest
@@ -422,20 +393,6 @@ class Surface:
         return {"path": pd.DataFrame(steps), "final_terms": [term_name(t, self.labels) for t in current],
                 "final_r2": self.fit(current).r2 if current else np.nan, "cutoff": cutoff}
 
-    def compare(self, *term_sets, labels: list[str] | None = None) -> pd.DataFrame:
-        rows = []
-        for i, ts in enumerate(term_sets):
-            f = self.fit(ts)
-            lof = self.lack_of_fit(ts)
-            shape = self.canonical(f).get("shape", "n/a")
-            rows.append({
-                "model": labels[i] if labels else f"set {i + 1}",
-                "terms": ", ".join(f.names), "n_terms": len(f.terms),
-                "r2": f.r2, "adj_r2": f.adj_r2, "aic": f.aic, "bic": f.bic,
-                "lof_cubic_p": lof["cubic"].get("p") if lof["cubic"] else np.nan,
-                "shape": shape,
-            })
-        return pd.DataFrame(rows).set_index("model")
 
     # ---- variance decomposition and tests --------------------------------------
 
@@ -534,7 +491,7 @@ class Surface:
     # ---- block bootstrap (departure from D16/D17, owner decision Oct 9, 2026) ------
     #
     # On the project's designs the HAC Wald tests reject far more often than their
-    # nominal level (notebooks/hac_size_check.py). Tests keep the same Wald F
+    # nominal level (reference/inference_validation.json). Tests keep the same Wald F
     # statistic but take its reference distribution from a residual block bootstrap
     # under the null; intervals come from a moving-block pairs bootstrap.
 
@@ -778,29 +735,3 @@ class Surface:
             "repeat_rows": self.pure_error()["repeat_rows"],
             "date_gaps": self.n_gaps,
         }
-
-    def summary(self, fit: FitResult | None = None) -> str:
-        fit = fit or self.full()
-        lof = self.lack_of_fit(fit.terms)
-        can = self.canonical(fit)
-        cov = f"HAC Newey-West, {fit.hac_lags} lags" if fit.cov_type == "hac" else "OLS"
-        lines = [
-            f"Response {self.response} | factors {', '.join(f'{l}={f}' for l, f in zip(self.labels, self.factors))}"
-            + (f" | block {', '.join(self.block)}" if self.block else ""),
-            f"n = {self.n} (dropped {self.n_dropped}, date gaps {self.n_gaps}) | {cov} | p-values approximate",
-            f"terms: {', '.join(fit.names)}",
-            f"R² = {fit.r2:.4f}   adj R² = {fit.adj_r2:.4f}   AIC = {fit.aic:.1f}   BIC = {fit.bic:.1f}",
-            "",
-            fit.table().to_string(float_format=lambda v: f"{v:.5g}"),
-            "",
-        ]
-        if lof["pure_error"]:
-            pe = lof["pure_error"]
-            lines.append(f"Lack of fit (pure error): F = {pe['F']:.3f}, p = {pe['p']:.4f}")
-        c = lof["cubic"]
-        lines.append(f"Lack of fit (cubic terms {', '.join(c['terms'])}): "
-                     + (f"F = {c['F']:.3f}, p = {c['p']:.4f}" if "F" in c else f"skipped ({c['skipped']})"))
-        lines.append(f"Shape: {can['shape']}"
-                     + (f", stationary point {can['stationary_real'].round(4).to_dict()} "
-                        f"(inside data: {can['inside_data']})" if "stationary_real" in can else ""))
-        return "\n".join(lines)

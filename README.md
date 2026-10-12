@@ -1,140 +1,156 @@
 # ERCOT DA–RT spread response surfaces
 
-Response surface regression of ERCOT day-ahead minus real-time (DART) price
-spreads on temperature and peak load, for the four competitive load zones
-(Houston, North, South, West) and the load-weighted system, October 1, 2025 to
-September 30, 2026.
+Reproduce ERCOT day-ahead minus real-time (DART) spread analysis for Houston,
+North, South, West, and the load-weighted system, October 1, 2025 through
+September 30, 2026. The pipeline prepares data, fits response surfaces, evaluates
+them, and generates tables, figures, and a facts sheet with source references.
 
-- **Responses**: daily spread volatility (log of the daily SD of hourly spreads)
-  and daily spread level (asinh-standardized all-hours mean spread).
-- **Factors**: daily mean temperature and daily peak load relative to the zone's
-  99.5th percentile, plus a post-RTC+B intercept block (from December 5, 2025).
-- **Method**: the NCSS response surface procedure (full quadratic, hierarchical
-  backward search), built on statsmodels and validated against the NCSS Odor
-  example. Tests and intervals use a block bootstrap (see *Inference* below).
-- **Data**: every input comes from Grid Status through its API: ERCOT DA and
-  15-minute RT settlement point prices, load by forecast zone, ERCOT
-  weather-zone temperatures, and the EIA Henry Hub daily spot price.
-
-All surfaces are **explanatory**, built from same-day realized conditions. None
-is a forecast.
+These are **explanatory surfaces using realized same-day inputs**, not operational
+forecasts or causal estimates. Baseline temperature × load models, load-forecast
+error extensions, and system net-load alternatives are all retained.
 
 ## Setup
 
-```bash
-uv venv .venv --python 3.12        # or python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/pip install -r requirements-dev.txt   # Jupyter, for the notebook only
-cp .env.example .env               # then add GRIDSTATUS_API_KEY
+Use Python 3.12 and the pinned dependencies:
+
+```sh
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
 ```
 
-## Running
+Set `GRIDSTATUS_API_KEY` in `.env` for downloads. The key and downloaded data are
+excluded from Git. API access must cover the configured datasets and study dates.
 
-The data pull is separate and is never run by the rebuild, so a rebuild never
-spends API requests.
+For development and offline regression tests:
 
-```bash
-# 1. Pull (spends API requests; run once, stage by stage, reviewing in between)
-python ingest.py access            # measure account limits -> data/raw/access.json
-python ingest.py test              # one-week trial pulls -> data/raw/test/
-python ingest.py full --snapshot 2026-10-03   # the full year -> data/raw/full/<snapshot>/
-python ingest.py test --only load_fcst        # optional phase: load forecast, trial week
-python ingest.py full --only load_fcst --snapshot 2026-10-11
-
-# 2. Rebuild everything from the raw snapshot named in config.py
-python run_all.py                  # build -> tables -> models -> figures -> facts -> outputs/<run_id>/
-python run_all.py --skip-build     # reuse data/processed (recorded in run.json)
-
-# Single steps
-python build.py [--step align|features]
-python tables.py --out outputs/dev
-python run_models.py --out outputs/dev [--models vol_zone lvl_zone]
-python figures.py --out outputs/dev
-
-# Tests (offline; none touches data/ or the API)
+```sh
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Every run folder holds the tables, the figures and a `run.json` with the
-settings, decision IDs, raw snapshot and checksums, package versions, code
-commit and a checksum for every output. `run_all.py` never overwrites a run
-folder.
+Tests use synthetic data and temporary files; they do not download data or
+change cached study inputs. Jupyter is not required for reproduction.
 
-## Layout
+## Obtain the inputs
 
-| Path | What it is |
+Data acquisition is separate from rebuilding. Inspect the access/trial results
+before requesting a full year; ingestion validates caches and API budgets.
+
+```sh
+python ingest.py access
+python ingest.py test
+python ingest.py full --snapshot 2026-10-03
+
+# Dataset-specific snapshots used by the current configuration
+python ingest.py full --only gas --snapshot 2026-10-08
+python ingest.py test --only load_fcst
+python ingest.py full --only load_fcst --snapshot 2026-10-11
+python ingest.py test --only wind_actual solar_actual
+python ingest.py full --only wind_actual solar_actual --snapshot 2026-10-10-renewables
+```
+
+`python ingest.py full --dry-run` previews the baseline pull plan without API
+calls. Downloads consume API quota; `run_all.py` never downloads anything.
+
+Snapshot names match `CONFIG['raw_snapshot']`. They are directory labels, not
+requests for the provider's historical data vintage. For exact historical
+reproduction, obtain the original raw Parquet files **and their JSON manifests**,
+preserve their relative paths, and use the recorded software versions. A later
+API download may contain revisions. Cache validation refuses to silently replace
+an existing snapshot with different query settings or altered bytes.
+
+```text
+data/raw/full/
+  2026-10-03/             # DA, RT quarterly chunks, zonal load, temperature
+  2026-10-08/             # gas
+  2026-10-11/             # load forecast
+  2026-10-10-renewables/  # actual wind and solar
+```
+
+Forecast and renewable inputs are optional for baseline runs. To reproduce all
+extensions and their comparisons, supply all these snapshots. Missing optional
+inputs skip the corresponding models without removing baseline results.
+
+## Rebuild and evaluate
+
+```sh
+python run_all.py --run-id my-analysis
+```
+
+The runner executes alignment/features → tables → models → figures → renewable
+validation → baseline held-out evaluation → facts. Results go to
+`outputs/my-analysis/`; existing run folders are never overwritten. Use a new
+run ID for each rebuild. `--skip-build` reuses prepared data and records that
+choice in the manifest.
+
+Each successful run includes `run.json` with settings, seeds, input/output
+checksums, Python/package versions, Git state when available, and a snapshot of
+the public source and reference files. Local experiments and report drafts are
+not included in that snapshot.
+
+Individual steps:
+
+```sh
+python build.py
+python tables.py --out outputs/dev
+python run_models.py --out outputs/dev
+python figures.py --out outputs/dev
+python evaluation.py --out outputs/evaluation
+python facts.py --out outputs/my-analysis
+```
+
+| Output | Purpose |
 |---|---|
-| `config.py` | Every setting, in one dictionary, with decision IDs |
-| `ingest.py`, `ingest_checks.py` | Pulls with manifests, cache identity, row and request budget guards |
-| `build.py` | `align()`: one row per zone × UTC hour (DST-safe grid, coverage flags). `make_features()`: hourly features and the daily modeling table |
-| `rsr.py` | The RSR engine: terms and hierarchy, coding, NCSS search, sequential sums of squares, conditional tests, lack of fit, canonical analysis, inside-data masks, marginal effects, block bootstrap. Knows nothing about electricity |
-| `tables.py` | Descriptive tables: representative spreads, between-zone columns, heat rates and load, gas sensitivity, event table |
-| `run_models.py` | Fits every model in priority order and writes the result tables |
-| `figures.py` | Exploration figure, binned volatility, masked contour maps, diagnostics |
-| `run_all.py` | The runner and `run.json` |
-| `facts.py` | Facts sheet (every reportable number with its source) and report-ready tables for a run |
-| `notebooks/explore_terms.ipynb` | Interactive term choice for one model at a time |
-| `notebooks/term_evidence.py` | Term-selection evidence for all models → `outputs/term_selection/` |
-| `notebooks/hac_size_check.py`, `bootstrap_check.py`, `bootstrap_real.py` | Size and coverage checks of the HAC and bootstrap inference → `outputs/hac_size/` |
-| `notebooks/out_of_sample_check.py` | Leave-one-day/week/month-out R² of every surface → `outputs/out_of_sample/` |
-| `docs/findings_and_decisions.md` | Everything found while building and every decision not in the plan |
-| `docs/term_selection.md` | The chosen descriptive terms and why |
-| `data/raw`, `data/interim`, `data/processed` | Raw snapshots (immutable, with manifests), the hourly panel, features and the daily table. Git-ignored |
-| `outputs/<run_id>/` | Tables, figures and `run.json` of one run |
+| `representative_table.csv`, `between_zone.csv`, `heat_rates_and_load.csv` | Descriptive market statistics |
+| `results_table.csv`, `coefficients.csv`, `conditional_tests.csv` | Model fits and inference |
+| `sequential_ss.csv`, `selection_history.csv`, `marginal_effects.csv` | Explained variation, search paths, slopes |
+| `bootstrap_sensitivity.csv`, `diagnostics.csv`, `smearing_check.csv` | Inference and model diagnostics |
+| `oos_r2.csv` | Day/week/month held-out diagnostics for available models |
+| `renewable_*.csv`, `renewable_coverage.json` | Matched gross/net-load fits, component comparisons, held-out scores and coverage |
+| `figures/` | Descriptive plots, masked contours, residual diagnostics, sensitivity outputs |
+| `facts.csv`, `facts.md`, `report_tables.md` | Numbers with sources and formatted analysis tables |
 
-## Inference
+## Method and interpretation
 
-On these designs the Newey–West HAC tests reject far more often than their
-nominal level: about 27–39% for the cubic lack-of-fit test and 8–40% for single
-terms at a nominal 5% (`notebooks/hac_size_check.py`). The causes are
-high-leverage days (largely Winter Storm Fern) and a long lag used with
-ordinary t and F references. Reported tests therefore use a **residual block
-bootstrap under the null** and intervals a **moving-block pairs bootstrap**
-(25-day blocks; 10 and 50 as sensitivity). Asymptotic HAC values are kept
-beside them for comparison. The full quadratic is the model for inference; the
-chosen reduced terms only define the surface that is drawn.
+- Volatility is log daily within-day spread SD; level is the asinh-standardized
+  daily mean spread.
+- Full quadratics supply inference. Approved hierarchical reduced terms in
+  `config.py` supply descriptive surfaces.
+- Tests use a residual block bootstrap; intervals use a pairs block bootstrap.
+  The main block length is 25 observations, with 10/50 sensitivity, 999 draws,
+  and seed 20261009.
+- Forecast-error extensions add realized load forecast error. Net-load models
+  replace gross system load with load minus delivered wind and solar.
+- `evaluation.py` preserves the original diagnostic's full-sample transforms and
+  approved terms. Renewable holdouts refit response transforms, factor coding,
+  and smearing on training days. Both use realized held-out inputs and can train
+  on dates after the held-out period; neither is a forecasting backtest.
 
-## Optional phase: load forecast error as a third factor
+See [methodology and limitations](docs/methodology.md) for sample rules, data
+repairs, term selection, smearing, matched comparisons, and evaluation caveats.
 
-`lvl_zone_fe`, `vol_zone_fe`, `lvl_sys_fe` and `vol_sys_fe` refit the main
-models with a third factor F, the day-ahead load forecast error (ERCOT's
-forecast from the 9:30 a.m. report the day before, checked against the
-10 a.m. bid-close rule row by row): the signed daily mean for level and the
-daily RMS for volatility, in % of forecast. They run last, in the same tables,
-and each results row compares the model with its two-factor base on the same
-days. The two-factor models, their terms, figures and facts are unchanged and
-are still produced by every run. Without a forecast in the snapshot, the
-F models are skipped. Findings: `docs/findings_and_decisions.md`, Section 2.15.
+The three historical inference-calibration summaries used in the facts sheet
+are explicit, versioned inputs in
+[`reference/inference_validation.json`](reference/inference_validation.json).
+They describe prior simulations on the original gross-load designs, not fresh
+calibration of every extension. Rebuilds reproduce those reference facts without
+depending on historical folders under `outputs/`.
 
-## Not done (future work)
+## Source layout
 
-What each would need to be done properly:
-
-| Item | What it would need |
+| File | Responsibility |
 |---|---|
-| Net-load system model | System wind and solar actuals and forecasts |
-| West basis model | West load-zone wind; the basis is its own descriptive response, not a stacked test |
-| Load-weighted zone temperature | Weather-zone load |
-| Ex-ante surfaces, rolling folds, a persistence baseline and Diebold–Mariano tests | One declared forecast origin, every input proven available at that time, gas release times rather than observation dates, fold-local selection and scaling |
-| RTC+B regime test | The pre-period is October 1 – December 4 only, so season and regime cannot be separated. Would need joint intercept and slope tests on shared support and other years as a placebo |
-| Battery-charging load adjustment | Zonal charging data or a tested allocation rule |
-| Heat-rate and demand surfaces, gross against net load | Not required by the assignment |
-| Deseasonalized SD, log IQR, HSL-based errors | Page budget; HSL field meaning unverified |
-| Quantile surfaces, regional gas prices | Own inference questions; no free daily Texas hub history |
+| `config.py` | Study settings, model specifications, selected terms, seeds |
+| `ingest.py`, `ingest_checks.py` | API acquisition, manifests, validation, budget guards |
+| `build.py` | Hourly alignment and daily features |
+| `rsr.py` | Response-surface fitting, inference, prediction, diagnostics |
+| `run_models.py` | Model orchestration and result tables |
+| `tables.py`, `figures.py`, `facts.py` | Analysis presentation |
+| `evaluation.py`, `renewable_validation.py` | Held-out and matched-model evaluation |
+| `run_all.py` | Offline end-to-end runner and reproducibility manifest |
+| `tests/` | Automated regression tests |
 
-## Limitations in brief
-
-- Load zones are load-weighted averages of many nodes, so zone comparisons
-  understate local congestion, especially in the Far West.
-- Henry Hub is used for every zone, so heat rates are Henry-Hub-based and miss
-  Waha.
-- Temperature groups ERCOT weather zones by load zone with equal weights;
-  Houston rests on Coast alone.
-- About ten Winter Storm Fern days carry most of the explained variation; the
-  level surfaces in particular are shaped by them.
-- The surfaces explain; they do not predict. Out of sample (leave one week out)
-  the volatility surfaces keep R² 0.14–0.20 through the stress days, but are
-  about 0 on ordinary days. The level surfaces do worse than a constant.
-- The main surfaces use two factors and cannot separate expected conditions
-  from surprises. The optional F models add the load forecast surprise only; it
-  is realized, so its link to spreads is an association.
+Generated data and results remain local. Interactive development work and the
+separate report evidence packager are outside the public reproduction workflow.

@@ -180,7 +180,8 @@ def test_full_requires_trial(tmp_path, monkeypatch):
     monkeypatch.setitem(ingest.PATHS, "raw_test", tmp_path / "test")
     with pytest.raises(IngestError, match="access"):
         ingest_checks.require_gates("full")
-    (tmp_path / "access.json").write_text("{}")
+    (tmp_path / "access.json").write_text(json.dumps({"datasets": {
+        key: {"accessible": True, "covers_study_start": True} for key in ingest.REQUIRED}}))
     with pytest.raises(IngestError, match="Trial file"):
         ingest_checks.require_gates("full")
 
@@ -262,3 +263,44 @@ def test_run_checks_keeps_records_of_other_files(tmp_path):
     ingest_checks.run_checks([p], tmp_path)
     out = json.loads((tmp_path / "_checks.json").read_text())
     assert set(out["files"]) == {"da", "gas"} and out["history"][0]["checked_at_utc"] == "earlier"
+
+
+def test_failed_access_blocks_trial(tmp_path, monkeypatch):
+    access = tmp_path / 'access.json'
+    access.write_text(json.dumps({'datasets': {k: {'accessible': k != 'da'} for k in ingest.REQUIRED}}))
+    monkeypatch.setitem(ingest.PATHS, 'access', access)
+    with pytest.raises(IngestError, match='Access gate'):
+        ingest_checks.require_gates('test')
+
+
+def test_full_revalidates_trial_even_without_check_summary(tmp_path, monkeypatch):
+    access = tmp_path / 'access.json'
+    access.write_text(json.dumps({'datasets': {k: {'accessible': True} for k in ingest.REQUIRED}}))
+    monkeypatch.setitem(ingest.PATHS, 'access', access)
+    monkeypatch.setitem(ingest.PATHS, 'raw_test', tmp_path)
+    p = plan_pulls('test', ['da'])[0]
+    monkeypatch.setattr(ingest_checks, 'trial_pulls', lambda names: [p])
+    write_atomic(small_df(), tmp_path, 'da', p['query'], {})
+    with pytest.raises(IngestError, match='Trial validation'):
+        ingest_checks.require_gates('full')
+
+
+def test_checking_other_dataset_does_not_clear_failure(tmp_path):
+    (tmp_path / '_checks.json').write_text(json.dumps({
+        'gate_failures': ['da: invalid locations'], 'files': {'da': {'rows': 1}}}))
+    p = plan_pulls('test', ['gas'])[0]
+    pd.DataFrame({'period': ['2025-10-30'], 'price': [3.0]}).to_parquet(tmp_path / 'gas.parquet')
+    with pytest.raises(IngestError, match='Exit checks'):
+        ingest_checks.run_checks([p], tmp_path)
+    assert json.loads((tmp_path / '_checks.json').read_text())['gate_failures'] == ['da: invalid locations']
+
+
+def test_atomic_write_does_not_import_network_client(tmp_path, monkeypatch):
+    import builtins
+    original = builtins.__import__
+    def guarded(name, *args, **kwargs):
+        if name == 'gridstatusio' or name.startswith('gridstatusio.'):
+            raise AssertionError('The local writer must not import the API client')
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', guarded)
+    write_atomic(small_df(), tmp_path, 'da', plan_pulls('test', ['da'])[0]['query'], {})

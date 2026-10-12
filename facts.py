@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import CONFIG
+from config import CONFIG, ROOT
 
 ZONE = {"LZ_HOUSTON": "Houston", "LZ_NORTH": "North", "LZ_SOUTH": "South", "LZ_WEST": "West", "SYSTEM": "System"}
-HAC_SIZE = CONFIG["paths"]["outputs"] / "hac_size"
+INFERENCE_REFERENCE = ROOT / "reference" / "inference_validation.json"
 
 
 class Facts:
@@ -116,6 +116,11 @@ def add_model_facts(F: Facts, out: Path) -> None:
               f"[{m['post_rtcb_boot_low']:.3f}, {m['post_rtcb_boot_high']:.3f}]", "results_table.csv", where,
               "post_rtcb_boot_low, post_rtcb_boot_high")
         if pd.notna(m.get("base_model")):  # optional phase: three-factor model against its base
+            if m['model'].endswith('_net'):
+                for col, label in [('r2_base_same_days', 'gross-load R² on identical days'),
+                                   ('r2_gain_vs_base', 'R² change when replacing gross load with net load')]:
+                    F.add(f"{col}|{key}", f"{lab}: {label}", m[col], 'results_table.csv', where, col, '{:.3f}')
+                continue
             for col, label, fmt in [("r2_base_same_days", f"R² of the two-factor {m['base_model']} on the same days", "{:.3f}"),
                                     ("r2_gain_vs_base", "R² gain from the added factor", "{:.3f}"),
                                     ("added_factor_p_boot", "added factor (all its terms) p (bootstrap)", "{:.3f}"),
@@ -136,21 +141,12 @@ def add_model_facts(F: Facts, out: Path) -> None:
               "slope_dollars, slope_dollars_low, slope_dollars_high")
 
 
-def add_inference_facts(F: Facts) -> None:
-    if not (HAC_SIZE / "size.csv").exists():
-        return
-    s = pd.read_csv(HAC_SIZE / "size.csv")
-    F.add("hac_size_lof", "HAC lack-of-fit false-rejection rate at nominal 5% (range over designs and noise)",
-          f"{s['lof_hac'].min():.0%}-{s['lof_hac'].max():.0%}", "outputs/hac_size/size.csv", "all rows", "lof_hac")
-    t = s.filter(regex=r"^t_.*_hac$")
-    F.add("hac_size_t", "HAC single-term false-rejection rate at nominal 5% (range)",
-          f"{t.min().min():.0%}-{t.max().max():.0%}", "outputs/hac_size/size.csv", "all rows", "t_*_hac")
-    if (HAC_SIZE / "bootstrap_size.csv").exists():
-        b = pd.read_csv(HAC_SIZE / "bootstrap_size.csv")
-        cols = [c for c in b.columns if c.startswith("lack_of_fit|boot")]
-        F.add("boot_size_lof", "bootstrap lack-of-fit false-rejection rate at nominal 5% (range, block lengths 10/25/50)",
-              f"{b[cols].min().min():.1%}-{b[cols].max().max():.1%}", "outputs/hac_size/bootstrap_size.csv",
-              f"all rows (reps {b['reps'].iloc[0]})", ", ".join(cols))
+def add_validation_reference_facts(F: Facts) -> None:
+    """Include explicitly versioned historical facts, independent of local outputs."""
+    reference = json.loads(INFERENCE_REFERENCE.read_text())
+    for i, fact in enumerate(reference["facts"]):
+        F.rows.append({**fact, "file": "reference/inference_validation.json",
+                       "row": f"facts[{i}]", "column": "value"})
 
 
 def fmt_p(p: float) -> str:
@@ -187,6 +183,14 @@ def report_tables(out: Path) -> str:
         lines += ["", "F: signed daily mean (level) or daily RMS (volatility) of the hourly load forecast error, "
                   "% of the day-ahead forecast (10 a.m. vintage). Surface comparison over observed days with F at its "
                   "sample median. R² and tests from the full quadratics.", ""]
+    if (out / 'renewable_comparison.csv').exists():
+        lines += ['## Optional renewable comparison (both alternatives retained)', '',
+                  'Full quadratics on identical days; load is replaced, not added. No nested added-factor test applies.', '',
+                  '| Response | Sample | n | Gross R² | Net R² | Gross month MAE | Net month MAE |',
+                  '|---|---|---|---|---|---|---|']
+        for _, m in read(out, 'renewable_comparison.csv').iterrows():
+            lines.append(f"| {m['response']} | {m['sample']} | {m['n']} | {m['gross_r2']:.3f} | {m['net_r2']:.3f} | {m['gross_month_mae']:.3f} | {m['net_month_mae']:.3f} |")
+        lines += ['', 'MAE is in $/MWh; held-out months use training-only transforms and smearing. Fern-excluded rows remove Fern from training and evaluation. These are explanatory diagnostics with realized inputs.', '']
     t = read(out, "representative_table.csv", index_col="zone")
     lines += ["## Representative spreads ($/MWh, daily means over complete days; spread = DA − RT)", "",
               "| Zone | All-hours mean | Median | SD | 5th–95th pct | DA > RT days | On-peak mean | Off-peak mean | Corr. with system | \\|RT basis\\| > $20 |",
@@ -201,17 +205,23 @@ def report_tables(out: Path) -> str:
     return "\n".join(lines)
 
 
+def markdown_cell(value) -> str:
+    """Escape literal cell content without changing the CSV or numeric values."""
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\r\n", "\n").replace("\n", "<br>")
+
+
 def write_facts(out: Path) -> Path:
     F = Facts()
     add_data_facts(F)
     add_descriptive_facts(F, out)
     add_model_facts(F, out)
-    add_inference_facts(F)
+    add_validation_reference_facts(F)
     df = F.frame()
     df.to_csv(out / "facts.csv", index=False)
     md = ["# Facts sheet", "", "Every number with its source. Files are in this run folder unless a path is given.", "",
           "| id | statement | value | file | row | column |", "|---|---|---|---|---|---|"]
-    md += [f"| {r.id} | {r.statement} | {r.value} | {r.file} | {r.row} | {r.column} |" for r in df.itertuples()]
+    md += ["| " + " | ".join(markdown_cell(v) for v in row) + " |"
+           for row in df.itertuples(index=False, name=None)]
     (out / "facts.md").write_text("\n".join(md) + "\n")
     (out / "report_tables.md").write_text(report_tables(out))
     print(f"Wrote {len(df)} facts and the report tables to {out}")

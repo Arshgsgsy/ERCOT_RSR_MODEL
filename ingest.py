@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+from importlib.metadata import version
 import json
 import os
 import sys
@@ -176,8 +177,6 @@ def cache_status(folder: Path, name: str, query: dict) -> str:
 def write_atomic(df: pd.DataFrame, folder: Path, name: str, query: dict, extra: dict) -> dict:
     """Write to a temporary file, check it, then rename into place.
     The manifest is written last, so a crash never leaves a file that looks complete."""
-    import gridstatusio
-
     folder.mkdir(parents=True, exist_ok=True)
     pq, mf = file_paths(folder, name)
     tmp = pq.with_name(pq.name + ".tmp")
@@ -191,7 +190,7 @@ def write_atomic(df: pd.DataFrame, folder: Path, name: str, query: dict, extra: 
         "name": name,
         "dataset": query["dataset"],
         "query": query,
-        "client": f"gridstatusio {gridstatusio.__version__}",
+        "client": f"gridstatusio {version('gridstatusio')}",
         "retrieved_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "rows": len(df),
         "columns": list(df.columns),

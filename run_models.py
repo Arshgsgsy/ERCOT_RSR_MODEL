@@ -1,8 +1,8 @@
 """Step 4 — Model runner (Build Plan, Section 6.5).
 
 Fits every model in priority order and writes the result tables into an output
-folder. The notebook (notebooks/explore_terms.ipynb) uses the same data
-preparation, so every model sample and response transform is defined once.
+folder. Shared data preparation defines every model sample and response
+transform once for model fitting, figures, and evaluation.
 
     python run_models.py --out outputs/<run_id>
 
@@ -273,6 +273,8 @@ def fern_diagnostic(daily: pd.DataFrame, model: str, zone: str, s: Surface, full
 def extra_factor_hold(s: Surface, model: str) -> dict:
     """Factors a model adds to its base, held at their sample median when the
     surface is compared with the base or drawn over T and L (Build Plan 6.6)."""
+    if MODELS[model].get("comparison") == "replacement":
+        return {}
     base = MODELS[MODELS[model]["base"]]["factors"]
     return {f: float(np.median(s.Xreal[:, i])) for i, f in enumerate(s.factors) if f not in base}
 
@@ -359,7 +361,9 @@ def run_one(daily: pd.DataFrame, model: str, zone: str, refs: dict) -> dict:
         ct[L][["p_boot"]]).reset_index().assign(**key)
     sens = pd.concat([ct[Lb][["p_boot"]].rename(columns={"p_boot": f"p_boot{Lb}"}) for Lb in ct], axis=1)
     sens.loc["lack of fit (cubic)"] = [lof[Lb]["p_boot"] for Lb in ct]
-    me = marginal_effects_dollars(s, full, draws, info, load_reference_mw(zone, refs)).assign(**key)
+    ref_key = MODELS[model].get("load_reference")
+    ref_mw = refs[ref_key] if ref_key else load_reference_mw(zone, refs)
+    me = marginal_effects_dollars(s, full, draws, info, ref_mw).assign(**key)
     diag_row = {**key, "vif": json.dumps({k: round(v, 3) for k, v in diag["vif"].items()}),
                 "condition_number": diag["condition_number"], "rank": diag["rank"], "n_params": diag["n_params"],
                 "leverage_mean": diag["leverage_mean"], "resid_acf_1": diag["resid_acf_1_5"][0],
@@ -391,6 +395,8 @@ def run(out: Path, models: list[str] | None = None) -> dict[str, pd.DataFrame]:
             print(f"{model:16s} {zone:10s} n {r['n']:3d}  R² {r['r2_full']:.3f}  terms {r['terms_chosen']:22s} "
                   f"LoF p boot {r['lof_p_boot']:.3f} (HAC {r['lof_p_hac']:.2g})  R² no Fern {r['r2_no_fern']:.3f}",
                   flush=True)
+    if not parts["row"]:
+        raise ModelUnavailable("No requested models are available; no result tables were written.")
     keys = ["model", "zone"]
 
     def front(df):
@@ -414,7 +420,9 @@ def run(out: Path, models: list[str] | None = None) -> dict[str, pd.DataFrame]:
     fig_dir.mkdir(exist_ok=True)
     p1 = [f for f, r in zip(parts["fits"], parts["row"]) if r["priority"] == 1]
     for resp in ("vol_zone", "lvl_zone"):
-        diagnostics_figure([f for f in p1 if f[0].startswith(resp)], fig_dir, name=f"diagnostics_{resp}")
+        fits = [f for f in p1 if f[0].startswith(resp)]
+        if fits:
+            diagnostics_figure(fits, fig_dir, name=f"diagnostics_{resp}")
     print(f"Wrote {len(tables)} tables and the diagnostics figures to {out}")
     return tables
 
