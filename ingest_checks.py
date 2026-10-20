@@ -1,4 +1,4 @@
-"""Ingest safety and one-time checks (Build Plan, Sections 6.1 and 8).
+"""Ingest safety and one-time checks
 
 Nothing here changes a value in the raw data. It covers the access check that
 wrote access.json, the stage order (access -> test -> full), the row budget,
