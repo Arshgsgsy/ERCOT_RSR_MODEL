@@ -1,26 +1,9 @@
-"""Step 5 — Figures (Build Plan, Section 6.6).
-
+"""- figures 
 Every figure is drawn at its final printed size (inches, 300 dpi) and written to
 <out>/figures/. Data behind each figure that is not already a table is saved as
 a CSV beside it, so every plotted number traces to a file.
 
-    python figures.py --out outputs/<run_id>
 
-Written so far
-- exploration.png       2 x 2: hourly spread distribution (asinh scale), daily spread
-                        SD against temperature colored by peak load, DA implied heat
-                        rate against peak load, zonal spread correlation heatmap
-- binned_sd_load.png    daily spread SD by peak-load decile, per zone (+ CSV)
-- contours_volatility.png   the four zones' volatility surfaces (owner's terms) in
-                        $/MWh with Duan smearing, one shared log color scale,
-                        masked to observed days, Fern days marked (+ grid CSV)
-- contours_volatility_unsmeared.png  the same without smearing (median SD), shown
-                        because residual spread changes across the factors
-                        (smearing_check.csv)
-- contour_system.png    the system surface on its own factors, zone color limits
-- contour_radius_sensitivity.csv  share of each grid shown at radius 0.10/0.15/0.20
-- diagnostics_figure()  residuals against fitted and time, normal probability plot,
-                        for any list of fits (called by the model runner)
 """
 
 from __future__ import annotations
