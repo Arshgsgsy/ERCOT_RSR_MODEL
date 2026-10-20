@@ -1,19 +1,8 @@
-"""Step 1 — Ingest (Build Plan, Section 6.1).
+"""— Ingest 
 
 Pulls the five required Grid Status datasets onto disk once, unchanged, with a
-manifest beside every file. Optional datasets (Build Plan 6.7) are pulled only
-when named with --only. Run on its own, never by run_all.py, so a rebuild
-never spends API requests or rows.
-
-    python ingest.py access                  # limits + dataset access -> data/raw/access.json
-    python ingest.py test                    # one-week trial -> data/raw/test/
-    python ingest.py full                    # full year -> data/raw/full/<snapshot>/
-    python ingest.py full --only gas --snapshot 2026-10-08
-    python ingest.py test --only load_fcst   # optional dataset: trial week first
-    python ingest.py full --only load_fcst --snapshot 2026-10-11
-
---dry-run lists the planned pulls, expected rows and cache status without
-calling the API. Each stage stops on the first failure.
+manifest beside every file. Optional datasets are pulled only
+when named with --only. 
 
 This file holds what the pipeline needs: planning the pulls, the manifest
 cache (also used by build.py to verify raw files) and the download loop. The
